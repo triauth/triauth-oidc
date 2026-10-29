@@ -1,0 +1,59 @@
+// triauth-oidc deployment manifest: what `wrangler deploy` reads.
+//
+// A deployment needs three things from you: the custom domain below, the signing key
+// (`node bin/keygen.mjs | npx wrangler secret put SIGNING_KEY_A`, after the first deploy),
+// and nothing else. Everything the code tunes lives in config.js.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "triauth-oidc",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+
+  // nodejs_compat: the triauth-js library contains one lazy, never-executed `import('node:dns')`
+  // (we always inject a DNS-over-HTTPS resolver); the flag lets the bundler and workerd resolve it.
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Before every dev session and deploy: write src/build-info.js, the version and the source commit
+  // that the footer of every page links to. See bin/build-info.mjs.
+  "build": { "command": "node bin/build-info.mjs", "watch_dir": "src" },
+
+  // The bridge lives on this hostname. Cloudflare creates the DNS record and the certificate.
+  // The zone (here triauth.org) must be on the same account.
+  "routes": [{ "pattern": "oidc.triauth.org", "custom_domain": true }],
+  "workers_dev": false,
+
+  // Variables are edited live in the dashboard too; keep_vars stops a deploy from resetting them.
+  "keep_vars": true,
+  "vars": {
+    // Which key slot signs: "A" or "B". The other slot, when filled, is published but does not sign.
+    // Rotation: fill the other slot, wait a day, flip this. See README, Operations.
+    "SIGNING_KEY_ACTIVE": "A",
+    // Space-separated domains this bridge serves, e.g. "example.com example.org". Empty = any
+    // domain that has a triauth record.
+    "DOMAINS": "",
+    // "1" turns on protocol diagnostics (triauth-js logs) in `wrangler tail`.
+    "DEBUG": ""
+    // Secrets (set with `wrangler secret put`, never written here):
+    //   SIGNING_KEY_A, SIGNING_KEY_B - RSA-2048 private keys as JWK, from bin/keygen.mjs
+  },
+
+  // Sign-in and code records live in one Durable Object class, one instance per domain
+  // (SQLite-backed, which the Workers Free plan supports). See src/lib/store.js.
+  "durable_objects": {
+    "bindings": [{ "name": "STORE", "class_name": "Store" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Store"] }],
+
+  // Per-address limits (IPv6 by /64), one per kind of endpoint, so that a flood on one cannot
+  // starve the others and each limit fits its users: people start a sign-in once or twice a
+  // minute, app servers call /token once per sign-in. Approximate and per Cloudflare location,
+  // which is enough to blunt abuse. See src/lib/http.js and README, Operations.
+  "ratelimits": [
+    { "name": "RATE_LIMIT_LOGIN",    "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "RATE_LIMIT_CALLBACK", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RATE_LIMIT_TOKEN",    "namespace_id": "1003", "simple": { "limit": 60, "period": 60 } },
+    { "name": "RATE_LIMIT_PAGES",    "namespace_id": "1004", "simple": { "limit": 10, "period": 60 } }
+  ],
+
+  "observability": { "enabled": true }
+}

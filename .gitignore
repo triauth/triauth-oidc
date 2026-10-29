@@ -1,0 +1,11 @@
+.idea/
+.vscode/
+.private/
+.agents/
+.claude/
+.codex/
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+src/build-info.js

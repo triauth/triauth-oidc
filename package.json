@@ -1,0 +1,36 @@
+{
+  "name": "triauth-oidc",
+  "version": "1.0.0-beta.1",
+  "private": true,
+  "license": "Elastic-2.0",
+  "description": "An OpenID Connect provider for triauth identities, as one Cloudflare Worker: sign in to any app that supports OpenID Connect with your triauth identity.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8799 --host localhost:8799",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node bin/build-info.mjs && node --test 'test/unit/*.test.mjs'",
+    "test:e2e": "node bin/build-info.mjs && vitest run",
+    "keygen": "node bin/keygen.mjs",
+    "credentials": "node bin/credentials.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "triauth": "1.0.0-beta.4"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.4",
+    "openid-client": "^6.8.8",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.151.0"
+  },
+  "overrides": {
+    "miniflare": {
+      "undici": "7.30.1"
+    },
+    "@cloudflare/vitest-plugin": {
+      "zod": "4.6.7"
+    }
+  }
+}

@@ -1,0 +1,99 @@
+name: Release
+
+# Releases triauth-oidc from a version tag. Make one with the release script (bumps package.json,
+# signed commit and tag, pushes both):
+#   .private/bin/release 1.0.0-beta.2
+# or by hand:
+#   git tag -s v1.0.0-beta.2 -m "triauth-oidc 1.0.0-beta.2" && git push origin main v1.0.0-beta.2
+#
+# Verify repeats the CI checks on the tagged commit and makes sure the tag names the package version.
+# Release then fast-forwards the `production` branch to the released commit. Workers Builds, connected
+# to `production` in the Cloudflare dashboard, deploys that commit to oidc.triauth.org; it sets
+# WORKERS_CI_COMMIT_SHA, so the footer of every page links to the released commit (bin/build-info.mjs).
+# Nothing here talks to Cloudflare, and there is no GitHub Release: the signed tag is the release.
+#
+# To run it by hand, dispatch it from the tag ref, not from a branch:
+#   gh workflow run release.yml --ref v1.0.0-beta.2
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+# Never cancel an in-flight release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege: only the release job writes, and asks for it below.
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: The tag names the package version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          [ "$REF_TYPE" = tag ] || { echo "::error::Run this workflow from a tag ref, not from a branch."; exit 1; }
+          PKG="v$(node -p "require('./package.json').version")"
+          [ "$PKG" = "$TAG" ] || { echo "::error::tag ${TAG} does not match package.json ${PKG}"; exit 1; }
+      - run: npm ci
+      # The same checks as the CI pipeline, on the tagged commit: unit tests under node --test, the real
+      # Worker in workerd against fake DNS and a scripted authenticator, the bundle `wrangler deploy`
+      # would upload, and advisories against the runtime dependency (triauth).
+      - run: npm test
+      - name: Bundle what `wrangler deploy` would upload
+        # The footer links to HEAD, the tagged commit even for an annotated tag (the checkout peels it);
+        # named explicitly so it does not depend on the checkout being clean.
+        run: SOURCE_COMMIT="$(git rev-parse HEAD)" npx wrangler deploy --dry-run --outdir dist
+      - name: The bundle's footer names this version and this commit
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          SHA="$(git rev-parse HEAD)"
+          grep -qF "\"${VERSION}\"" dist/index.js || { echo "::error::version ${VERSION} missing from the bundle"; exit 1; }
+          grep -qF "/tree/${SHA}" dist/index.js || { echo "::error::source commit ${SHA} missing from the bundle"; exit 1; }
+      - run: npm audit --omit=dev
+
+  release:
+    name: Release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push `production`
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the push below fast-forwards `production`, and git rejects that ("fetch first")
+          # unless the current production tip is present locally.
+          fetch-depth: 0
+          # Don't leave the token in the checkout; the push passes it explicitly.
+          persist-credentials: false
+      - name: Advance the production branch to this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        # HEAD is the tagged commit even for an annotated tag, as the checkout peels it. A plain push
+        # creates `production` the first time and refuses anything but a fast-forward after that.
+        run: |
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "HEAD:refs/heads/production" || {
+            echo "::error::Could not fast-forward 'production' to $TAG. Is this release a descendant of the current production tip?"
+            exit 1
+          }

@@ -1,0 +1,72 @@
+name: CI pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Weekly run so newly-disclosed advisories surface without a commit.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+# A newer commit on the same branch/PR supersedes in-flight runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: the whole pipeline only needs to read the repo.
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  test:
+    name: Tests node-${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # wrangler and miniflare need Node 22 or newer (package.json, engines).
+        node-version: [22.x, 24.x]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      # Unit tests under node --test, then the real Worker in workerd against fake DNS and a scripted
+      # authenticator. Nothing reaches the network. Both scripts write src/build-info.js first.
+      - run: npm test
+
+  bundle:
+    name: Bundle & audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      # What `wrangler deploy` would upload: runs the custom build (bin/build-info.mjs) and bundles
+      # src/ with the nodejs_compat flag, without touching Cloudflare.
+      - run: npx wrangler deploy --dry-run --outdir dist
+      - name: The bundle's footer names this version and this commit
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          grep -qF "\"${VERSION}\"" dist/index.js || { echo "::error::version ${VERSION} missing from the bundle"; exit 1; }
+          grep -qF "/tree/${SHA}" dist/index.js || { echo "::error::source commit ${SHA} missing from the bundle"; exit 1; }
+      # Advisories against the runtime dependency (triauth). Dev tooling is Dependabot's job.
+      - run: npm audit --omit=dev
