@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appSetup, appGuides } from '../../src/lib/apps.js';
+import { appSetup } from '../../src/lib/apps.js';
 import { providerFor } from '../../src/lib/provider.js';
 
 const provider = providerFor('https://oidc.test', 'example.com');
@@ -57,16 +57,4 @@ test('an app without a secret gets an empty one, and Ruby strings are quoted', (
   const uri = 'https://code.example.com/a"b\\c/users/auth/openid_connect/callback';
   const line = setupFor(uri).split('\n').find((text) => text.includes('redirect_uri:'));
   assert.equal(JSON.parse(line.replace(/^\s*redirect_uri: /, '')), uri);
-});
-
-test('every app listed links its own guide to OpenID Connect, sorted by name', () => {
-  const apps = appGuides();
-  assert.ok(apps.length >= 25);
-  assert.equal(new Set(apps.map(({ name }) => name)).size, apps.length, 'no app twice');
-  assert.ok(apps.every(({ docs }) => docs.startsWith('https://')));
-  for (const name of ['Grafana', 'GitLab', 'Nextcloud', 'Outline', 'Cloudflare Access', 'Immich', 'Proxmox VE']) {
-    assert.ok(apps.some((app) => app.name === name), name);
-  }
-  const names = apps.map(({ name }) => name);
-  assert.deepEqual(names, [...names].sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })));
 });

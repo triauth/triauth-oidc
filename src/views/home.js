@@ -10,8 +10,18 @@
 //   problem   a sentence about what was typed, when it was not a domain the bridge serves
 
 import { html } from '../lib/html.js';
+import { EVERYWHERE_URL } from './partials.js';
 
-const APPS = ['Grafana', 'GitLab', 'Nextcloud', 'Proxmox', 'Cloudflare Access', 'Outline'];
+// The apps named on the page, each linked to its entry in the showcase on www.triauth.org
+const APPS = [
+  ['GitLab', 'gitlab'],
+  ['Grafana', 'grafana'],
+  ['Jenkins', 'jenkins'],
+  ['Nextcloud', 'nextcloud'],
+  ['Proxmox', 'proxmox-ve'],
+  ['Portainer', 'portainer'],
+  ['Outline', 'outline'],
+];
 
 export default ({ problem }) => html`
 <h1 class="hero">Sign in with triauth
@@ -19,7 +29,7 @@ export default ({ problem }) => html`
 <!--  <span class="quiet">In the apps you already use.</span>-->
 </h1>
 <!--<p class="lead">Most apps with a “Sign in with SSO” button can sign people in with <a href="https://www.triauth.org/">triauth</a>. Nothing to install. Nothing to register. No passwords to remember.</p>-->
-<div class="works"><span>Works with</span><ul class="chips">${APPS.map((app) => html`<li>${app}</li>`)}</ul><span>and more</span></div>
+<div class="works"><span>Works with</span><ul class="chips">${APPS.map(([name, slug]) => html`<li><a href="${EVERYWHERE_URL}${slug}/">${name}</a></li>`)}</ul><a class="more" href="${EVERYWHERE_URL}?q=OIDC">and more</a></div>
 <form class="card" method="get" action="/">
 <div class="card-body split">
 <div>

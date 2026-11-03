@@ -88,7 +88,8 @@ test('domain, credentials, tile and home pages render and escape', async () => {
   assert.ok(d.includes('<button type="submit">Connect app</button>'), 'the button next to the notice');
   assert.ok(d.includes('href="https://www.triauth.org/legal/privacy"'));
   assert.ok(d.includes(provider.discovery));
-  assert.ok(d.includes('<li><a href="https://grafana.com/docs/grafana/latest/setup-grafana/configure-access/configure-authentication/generic-oauth/" target="_blank" rel="noopener">Grafana <span aria-hidden="true">↗</span></a></li>'), 'the guides come from apps.js');
+  assert.ok(d.includes('copy its redirect URI. <span class="hint">Not sure where? <a href="https://www.triauth.org/everywhere/?q=OIDC" target="_blank" rel="noopener">Setup guides for popular apps <span aria-hidden="true">↗</span></a></span></li>'), 'step 1 links the showcase of guides');
+  assert.equal((d.match(/<details class="more"/g) || []).length, 1, 'the provider settings are the only fold');
   assert.equal(d.includes('<img'), false);
   const c = await credentialsPage({ provider, credentials: { clientId: 'r_s', clientSecret: 'S', host: 'app.example.com', redirectUri: 'https://app.example.com/login/generic_oauth' } }).text();
   assert.ok(c.includes('<h2>Using Grafana?</h2>'));

@@ -4,34 +4,34 @@
  */
 
 // A domain's page, laid out like a settings dashboard: the domain with its status, the card that
-// connects an app (the reason most admins are here), and two quiet folds below it, both closed: the
-// provider settings, and links to popular apps' own guides to OpenID Connect.
+// connects an app (the reason most admins are here), and one quiet fold below it, closed: the
+// provider settings.
 //
 //   provider   the domain's provider, with its URLs
 //   status     {configured: true, authenticator, secure} | {configured: false} | {configured: null}
 //              when DNS could not be read, or null when the page shows no status
 //   form       {redirectUri, publicClient, limitGroup, group, problem}: the form as it was sent back,
 //              with the problem found in it, or {} for a fresh form
-//   guides     [{name, docs}]: apps the bridge knows (apps.js), sorted by name, each with its own
-//              guide to OpenID Connect
 //
 // The card walks someone new to OpenID Connect through the order that is easy to miss: copy the
 // redirect URI out of the app, paste it here, then copy what comes back into the app. The steps sit
 // above the fields, not beside them, so the card reads in that order and a long redirect URI fits its
-// field, where it can be checked against the app's. The group's field shows only while its box is
-// checked, by the stylesheet alone, because the pages run no scripts. The box's hint links to
-// triauth's page on groups, which many admins meet here first. The hint sits outside the label, tied
-// to the box by aria-describedby, so the link is not read as part of the box's name, and the link
-// opens in a new tab, so the form keeps what was typed.
+// field, where it can be checked against the app's. A hint line under the first step links the
+// showcase on www.triauth.org, filtered to the apps that sign in through the bridge, where each app's
+// guide shows where its redirect URI is; the bridge keeps no list of guides of its own. The group's
+// field shows only while its box is checked, by the stylesheet alone, because the pages run no
+// scripts. The box's hint links to triauth's page on groups, which many admins meet here first. The
+// hint sits outside the label, tied to the box by aria-describedby, so the link is not read as part
+// of the box's name. Both links open in a new tab, so the form keeps what was typed.
 //
 // The notice next to the Connect button is how the person connecting an app agrees to the Terms
 // (the Terms name "clicking a button that refers to them"). It sits right next to the button, in
 // readable text, and links both documents.
 
 import { html } from '../lib/html.js';
-import { breakAfterDots, providerSettings, TERMS_URL, PRIVACY_URL } from './partials.js';
+import { breakAfterDots, providerSettings, TERMS_URL, PRIVACY_URL, EVERYWHERE_URL } from './partials.js';
 
-export default ({ provider, status, form, guides = [] }) => html`
+export default ({ provider, status, form }) => html`
 <div class="page-head">
 <h1>OpenID Connect for ${breakAfterDots(provider.domain)}</h1>
 </div>
@@ -41,7 +41,7 @@ ${banner(provider.domain, status)}
 <h2>Connect an app</h2>
 <p>Let everyone with an <strong>@${provider.domain}</strong> identity sign in to an app with triauth.</p>
 <ol>
-<li>Go to the app's SSO, OpenID Connect (OIDC), or generic OAuth settings, and copy its redirect URI.</li>
+<li>Go to the app's SSO, OpenID Connect (OIDC), or generic OAuth settings, and copy its redirect URI. <span class="hint">Not sure where? <a href="${EVERYWHERE_URL}?q=OIDC" target="_blank" rel="noopener">Setup guides for popular apps <span aria-hidden="true">↗</span></a></span></li>
 <li>Paste it below and click <strong>Connect app</strong>.</li>
 <li>Put the client ID, secret and issuer you get back into the app.</li>
 </ol>
@@ -66,12 +66,6 @@ ${form.problem ? html`<p class="err">${form.problem}</p>` : ''}
 </div>
 </form>
 ${providerSettings(provider, { collapsed: true })}
-${guides.length ? html`<details class="more">
-<summary>Setup guides for popular apps</summary>
-<ul class="guides">${guides.map(({ name, docs }) => html`
-<li><a href="${docs}" target="_blank" rel="noopener">${name} <span aria-hidden="true">↗</span></a></li>`)}
-</ul>
-</details>` : ''}
 `;
 
 function banner(domain, status) {

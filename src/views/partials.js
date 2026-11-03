@@ -15,6 +15,9 @@ import { html } from '../lib/html.js';
 export const TERMS_URL = 'https://www.triauth.org/legal/terms';
 export const PRIVACY_URL = 'https://www.triauth.org/legal/privacy';
 
+// The showcase of apps on www.triauth.org
+export const EVERYWHERE_URL = 'https://www.triauth.org/everywhere/';
+
 /**
  * Where the bridge's source lives, linked from the footer. A build links to the exact commit it was
  * made from instead, when that is known (src/build-info.js, written by bin/build-info.mjs).

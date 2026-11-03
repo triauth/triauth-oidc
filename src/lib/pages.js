@@ -16,7 +16,7 @@
 
 import { pageHeaders } from './html.js';
 import { carriedFields } from './request.js';
-import { appSetup, appGuides } from './apps.js';
+import { appSetup } from './apps.js';
 // The version and the source this build was made from, written by bin/build-info.mjs before every build.
 import { version, sourceUrl } from '../build-info.js';
 import layout from '../views/layout.js';
@@ -59,7 +59,7 @@ export function domainPage({ provider, status = null, form = {}, httpStatus = 20
     title: `${provider.domain} · triauth OpenID Connect provider`,
     status: httpStatus,
     wide: true,
-    body: domainView({ provider, status, form, guides: appGuides() }),
+    body: domainView({ provider, status, form }),
   });
 }
 

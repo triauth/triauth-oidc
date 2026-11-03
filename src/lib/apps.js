@@ -3,15 +3,15 @@
  * SPDX-License-Identifier: Elastic-2.0
  */
 
-// The apps the bridge knows by their redirect URI: the setup the credentials page shows for each, and
-// the links to their own OpenID Connect guides that the domain's page lists.
+// The apps the bridge knows by their redirect URI: the setup the credentials page shows for each,
+// with a link to the app's own OpenID Connect guide.
 //
 // The redirect URI ends in a path that the app itself chose, such as Grafana's /login/generic_oauth,
 // so the path tells which app asked, on any host and under any folder. The host says nothing: it is
 // whatever name the app's owner gave the server. An app gets a setup card only when its setup is text
-// to paste or run (a file, environment variables, a command). Many more apps are listed for their
-// guide alone (MORE_GUIDES): they are set up in a web form, or with options that vary too much to
-// fill in for them, and the provider settings are what they need.
+// to paste or run (a file, environment variables, a command). Apps set up in a web form, or with
+// options that vary too much to fill in for them, get no card: the provider settings are what they
+// need, and their guides live in the showcase on www.triauth.org, which the domain's page links.
 //
 // Each setup was checked against the app's documentation and source on 2026-10-20, and every guide
 // link was opened on 2026-10-21 (each loads, and is about OpenID Connect). When an app changes its
@@ -104,34 +104,6 @@ const APPS = [
   },
 ];
 
-// Apps listed for their own OpenID Connect guide only, on the domain's page.
-const MORE_GUIDES = [
-  { name: 'Gitea', docs: 'https://docs.gitea.com/administration/authentication/' },
-  { name: 'Argo CD', docs: 'https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/#existing-oidc-provider' },
-  { name: 'Jenkins', docs: 'https://plugins.jenkins.io/oic-auth/' },
-  { name: 'Portainer', docs: 'https://docs.portainer.io/admin/settings/authentication/oauth' },
-  { name: 'Proxmox VE', docs: 'https://pve.proxmox.com/wiki/User_Management#pveum_openid' },
-  { name: 'HashiCorp Vault', docs: 'https://developer.hashicorp.com/vault/docs/auth/jwt' },
-  { name: 'kubectl (kubelogin)', docs: 'https://github.com/int128/kubelogin' },
-  { name: 'BookStack', docs: 'https://www.bookstackapp.com/docs/admin/oidc-auth/' },
-  { name: 'Mattermost', docs: 'https://docs.mattermost.com/administration-guide/onboard/sso-openidconnect' },
-  { name: 'Matrix (Synapse)', docs: 'https://element-hq.github.io/synapse/latest/openid.html' },
-  { name: 'Zammad', docs: 'https://admin-docs.zammad.org/en/latest/settings/security/third-party/openid-connect.html' },
-  { name: 'Penpot', docs: 'https://help.penpot.app/technical-guide/configuration/#openid-connect' },
-  { name: 'Vikunja', docs: 'https://vikunja.io/docs/openid/' },
-  { name: 'Paperless-ngx', docs: 'https://docs.paperless-ngx.com/advanced_usage/#openid-connect-and-social-authentication' },
-  { name: 'Immich', docs: 'https://docs.immich.app/administration/oauth/' },
-  { name: 'Jellyfin (SSO plugin)', docs: 'https://github.com/9p4/jellyfin-plugin-sso' },
-  { name: 'Audiobookshelf', docs: 'https://audiobookshelf.org/docs/documentation/server-management/oidc-authentication/' },
-  { name: 'Mealie', docs: 'https://mealie.io/documentation/getting-started/authentication/oidc-v2/' },
-  { name: 'Open WebUI', docs: 'https://docs.openwebui.com/features/authentication-access/auth/sso/' },
-  { name: 'Cloudflare Access', docs: 'https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/generic-oidc/' },
-  { name: 'Tailscale', docs: 'https://tailscale.com/docs/integrations/identity/custom-oidc' },
-  { name: 'Headscale', docs: 'https://headscale.net/stable/ref/oidc/' },
-  { name: 'Vaultwarden', docs: 'https://github.com/dani-garcia/vaultwarden/wiki/Enabling-SSO-support-using-OpenId-Connect' },
-];
-
-
 const ruby = (value) => JSON.stringify(value);
 const shell = (value) => `'${value}'`;
 
@@ -150,16 +122,4 @@ export function appSetup(provider, credentials) {
     return null;
   }
   return { name: app.name, how: app.how, docs: app.docs, setup: app.setup(provider, credentials).join('\n') };
-}
-
-/**
- * Every app listed, with its own guide to setting up OpenID Connect, sorted by name, for the domain's
- * page.
- *
- * @returns {Array<{name: string, docs: string}>}
- */
-export function appGuides() {
-  return [...APPS, ...MORE_GUIDES]
-    .map(({ name, docs }) => ({ name, docs }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
 }

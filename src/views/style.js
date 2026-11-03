@@ -138,12 +138,24 @@ h1 .quiet {
   display: contents;
   list-style: none;
 }
-.chips li {
+.chips a {
+  display: inline-block;
   padding: .125rem .75rem;
   color: var(--text);
+  text-decoration: none;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 999px;
+}
+.chips a:hover {
+  color: var(--brand);
+  border-color: var(--brand);
+}
+.works .more {
+  color: inherit;
+}
+.works .more:hover {
+  color: var(--brand);
 }
 .columns {
   display: grid;
@@ -324,6 +336,9 @@ form.card > .card-head + .card-body {
 .card-head li + li {
   margin-top: .25rem;
 }
+.card-head li .hint {
+  margin-top: .125rem;
+}
 .card-head li::marker {
   font-weight: 600;
   color: var(--ink);
@@ -481,40 +496,6 @@ details.more .rows > div:last-child {
   details.more > summary::before {
     transition: none;
   }
-}
-/* Two folds in a row sit closer together */
-details.more + details.more {
-  margin-top: -.75rem;
-}
-/* Links to other sites' guides, as pills with an arrow that says they open elsewhere */
-.guides {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .5rem;
-  margin: .75rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-.guides a {
-  display: inline-block;
-  padding: .25rem .75rem;
-  font-size: .875rem;
-  color: var(--text);
-  text-decoration: none;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-}
-.guides a:hover {
-  color: var(--brand);
-  border-color: var(--brand);
-}
-.guides a span {
-  margin-left: .125rem;
-  color: var(--muted);
-}
-.guides a:hover span {
-  color: inherit;
 }
 
 /* The provider's settings and the credentials */

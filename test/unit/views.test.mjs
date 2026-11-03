@@ -60,12 +60,10 @@ test('every view renders hostile values harmlessly and returns an Html fragment'
     assert.equal(text.includes("<script>alert"), false);
     assert.ok(text.includes('&lt;script&gt;'));
   }
-  // The guides fold below the provider settings, closed, escaped, and only when there are some.
-  const withGuides = domain({ provider, status: null, form: {}, guides: [{ name: HOSTILE, docs: 'https://docs.example.com/' }] }).toString();
-  assert.ok(withGuides.includes('</details>\n<details class="more">\n<summary>Setup guides for popular apps</summary>'));
-  assert.ok(withGuides.includes('<a href="https://docs.example.com/" target="_blank" rel="noopener">'));
-  assert.equal(withGuides.includes('<img'), false);
-  assert.equal(domain({ provider, status: null, form: {} }).toString().includes('Setup guides'), false);
+  // Step 1 links the showcase of guides on www.triauth.org, in a new tab so the form keeps what was typed.
+  const steps = domain({ provider, status: null, form: {} }).toString();
+  assert.ok(steps.includes('copy its redirect URI. <span class="hint">Not sure where? <a href="https://www.triauth.org/everywhere/?q=OIDC" target="_blank" rel="noopener">Setup guides for popular apps <span aria-hidden="true">↗</span></a></span></li>'));
+  assert.equal((steps.match(/<details class="more"/g) || []).length, 1, 'no fold of guides below the settings');
 
   // The provider settings fold on the domain's page and stay open on the credentials page.
   assert.ok(domain({ provider, status: null, form: {} }).toString().includes('<details class="more">\n<summary>View provider settings</summary>'));
