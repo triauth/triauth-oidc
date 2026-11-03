@@ -99,11 +99,12 @@ export async function finishSignIn(env, { challenge, response, domain }) {
  * @returns {object}
  */
 export function claimsOf(result) {
+  const [username] = result.identifier.split('@');   // triauth-js checked the identifier: exactly one @
   const claims = {
     sub: result.identifier,                          // the identifier is the stable account key
     email: result.identifier,
     email_verified: true,                            // whoever controls the domain's DNS controls both
-    preferred_username: result.identifier,
+    preferred_username: username,                    // unique here: a provider serves one domain
     groups: result.groups,                           // e.g. ['admins@example.com'], from the groups records
     triauth_secure: result.secure === true,          // DNSSEC protected every record involved
     auth_time: Math.floor(result.verifiedAt / 1000), // when the bridge verified the response

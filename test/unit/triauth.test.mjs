@@ -26,13 +26,13 @@ test('a code the table does not know gets a generic text that names it, never a 
   assert.equal(errorText(401), 'The sign-in failed (401). Please try again.', 'the numeric codes of older triauth-js are gone');
 });
 
-test('claims carry the identity, its groups, the DNSSEC result and the time, and a name only when published', () => {
+test('claims carry the identity and its username, its groups, the DNSSEC result and the time, and a name only when published', () => {
   const result = { identifier: 'john@example.com', groups: ['admins@example.com'], secure: true, verifiedAt: 1777454675123 };
   assert.deepEqual(claimsOf(result), {
     sub: 'john@example.com',
     email: 'john@example.com',
     email_verified: true,
-    preferred_username: 'john@example.com',
+    preferred_username: 'john',
     groups: ['admins@example.com'],
     triauth_secure: true,
     auth_time: 1777454675,

@@ -274,7 +274,7 @@ describe('I1: a token names only identities at its domain', () => {
     expect(claims.nonce).toBe(checks.expectedNonce);
     expect(claims.email).toBe(JOHN);
     expect(claims.email_verified).toBe(true);
-    expect(claims.preferred_username).toBe(JOHN);
+    expect(claims.preferred_username).toBe('john');
     expect(claims.name).toBe('John Doe');
     expect(claims.groups).toEqual(['admins@triauthdemo.org', 'dev@triauthdemo.org']);
     expect(claims.triauth_secure).toBe(true);
@@ -294,7 +294,7 @@ describe('I1: a token names only identities at its domain', () => {
 
     const userinfo = await oidc.fetchUserInfo(config, tokens.access_token, claims.sub);
     expect(userinfo).toEqual({
-      sub: JOHN, email: JOHN, email_verified: true, preferred_username: JOHN, name: 'John Doe',
+      sub: JOHN, email: JOHN, email_verified: true, preferred_username: 'john', name: 'John Doe',
       groups: ['admins@triauthdemo.org', 'dev@triauthdemo.org'], triauth_secure: true,
     });
 
