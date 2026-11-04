@@ -8,8 +8,9 @@
 // triauth-js does the protocol work. This file is the glue around it: the DNS-over-HTTPS resolver
 // stack, the two calls that make a sign-in (stage 1 issues a challenge and finds the user's
 // authenticator in DNS; stage 3 verifies the signed response against the keys in the user's DNS
-// records), the claims the bridge derives from a verified sign-in, and the texts shown for triauth's
-// error codes. Nothing else in the bridge imports triauth-js for protocol work.
+// records), the check that a refresh makes between sign-ins, the claims the bridge derives from a
+// verified sign-in, and the texts shown for triauth's error codes. Nothing else in the bridge imports
+// triauth-js for protocol work.
 
 import * as Triauth from 'triauth';
 import CONFIG from '../../config.js';
@@ -73,7 +74,7 @@ export async function startSignIn(env, { identifier, callbackUrl, appHost }) {
  * @param options {{challenge: string, response: string, domain: string}}
  * @returns {Promise<{ok: true, claims: object, deviceTag: string}|{ok: false, code: string, text: string}>}
  *          `claims` are the token claims (see claimsOf); `deviceTag` names the device that signed,
- *          kept for a future refresh grant that would re-check it with Triauth.check.
+ *          which a refresh checks again with checkSignIn.
  */
 export async function finishSignIn(env, { challenge, response, domain }) {
   const result = await Triauth.authenticate({ challenge, response }, cfg(env));
@@ -90,10 +91,34 @@ export async function finishSignIn(env, { challenge, response, domain }) {
 }
 
 /**
+ * Between sign-ins: whether the device that signed in may stay signed in. Triauth.check reads the
+ * identity's records again and says whether the device's keys are still published, with the groups
+ * the identity has now and whether DNSSEC protected the answer. Nothing is signed: a refresh is not a
+ * new sign-in, it confirms that the old one has not been revoked.
+ *
+ * @param env {object} - The Worker environment.
+ * @param options {{identifier: string, deviceTag: string}} - From the sign-in.
+ * @returns {Promise<{ok: true, groups: Array<string>, secure: boolean}|{ok: false, final: boolean, code: string}>}
+ *          `final` is true for a verdict (the device or the identity is gone, or no longer meets the
+ *          DNSSEC rule) and false when DNS could not be read right now, so the caller may try again.
+ */
+export async function checkSignIn(env, { identifier, deviceTag }) {
+  const result = await Triauth.check({ identifier, deviceTag }, cfg(env));
+  if (result.error) {
+    return { ok: false, final: result.error.code === 'dnssec_required', code: result.error.code };
+  }
+  if (!result.valid) {
+    return { ok: false, final: true, code: result.reason };
+  }
+  return { ok: true, groups: result.groups, secure: result.secure === true };
+}
+
+/**
  * The claims the bridge puts into its tokens, from a verified sign-in. Every token carries all of
  * them, whatever scopes the app asked for: they are the identity's own public DNS data, and the user
  * approved the sign-in. The lookup code, the device tag, the device name, the session key, and the
- * keys never leave the bridge.
+ * keys never leave the bridge. A refresh carries these claims along and replaces `groups` and
+ * `triauth_secure` with what checkSignIn found.
  *
  * @param result {object} - A successful Triauth.authenticate result.
  * @returns {object}

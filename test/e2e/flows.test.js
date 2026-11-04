@@ -6,14 +6,20 @@
 //   I3  each triauth challenge and each code is used at most once
 //   I4  stored records expire within minutes and cannot be read without the cookie or the code
 //   I5  the bridge sends the browser to an app only after the user saw the app's address and acted
+//   I6  a refresh gives tokens only to the app with the secret the token was issued to, and only
+//       while the device that signed in is still published in DNS
 
 import { describe, it, expect } from 'vitest';
 import { env, runInDurableObject, runDurableObjectAlarm } from 'cloudflare:test';
 import { BASE, DOMAIN, makeJar, req, hiddenFields } from './client.js';
 import { JOHN_DESKTOP, JOHN_LAPTOP, challengeFrom, callbackUrlOf, manifestOf, approve } from './authenticator.js';
 import { discover, startAuthorization, oidc } from './rp.js';
+import auth from './triauth-js/auth.json';
+import config from '../../config.js';
 import { createCredentials } from '../../src/lib/credentials.js';
 import { decodeJwt } from '../../src/lib/jwt.js';
+import { loadKeys } from '../../src/lib/keys.js';
+import { mintRefreshToken } from '../../src/lib/refresh.js';
 import worker from '../../src/index.js';
 
 const ISSUER = `${BASE}/${DOMAIN}`;
@@ -95,7 +101,8 @@ describe('discovery and keys', () => {
     expect(doc.userinfo_endpoint).toBe(`${ISSUER}/userinfo`);
     expect(doc.jwks_uri).toBe(`${ISSUER}/jwks`);
     expect(doc.response_types_supported).toEqual(['code']);
-    expect(doc.grant_types_supported).toEqual(['authorization_code']);
+    expect(doc.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+    expect(doc.scopes_supported).toEqual(['openid', 'email', 'profile', 'groups', 'offline_access']);
     expect(doc.id_token_signing_alg_values_supported).toEqual(['RS256']);
     expect(doc.code_challenge_methods_supported).toEqual(['S256']);
     expect(doc.token_endpoint_auth_methods_supported).toEqual(['client_secret_basic', 'client_secret_post', 'none']);
@@ -618,7 +625,7 @@ describe('client authentication and PKCE', () => {
 
   it('other grant types, bad bodies, and bad tokens at /userinfo are refused', async () => {
     const creds = await createCredentials(DOMAIN, APP);
-    const grant = await tokenRequest({ grant_type: 'refresh_token', refresh_token: 'x' }, { basic: { id: creds.clientId, secret: creds.clientSecret } });
+    const grant = await tokenRequest({ grant_type: 'password', username: 'john', password: 'x' }, { basic: { id: creds.clientId, secret: creds.clientSecret } });
     expect(grant.status).toBe(400);
     expect((await grant.json()).error).toBe('unsupported_grant_type');
     expect((await tokenRequest({ grant_type: 'authorization_code', code: 'x', redirect_uri: APP })).status).toBe(400);
@@ -636,6 +643,194 @@ describe('client authentication and PKCE', () => {
     expect(idTokenAsAccess.status).toBe(401);
     const otherDomain = await req(makeJar(), 'GET', '/other.example/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } });
     expect(otherDomain.status).toBe(401);
+  });
+});
+
+// -------------------------------------------------------------------------------- I6 --
+
+describe('I6: refresh tokens', () => {
+  const OFFLINE = { scope: 'openid email profile groups offline_access' };
+  const JOHN_NAME = 'john._at.triauthdemo.org';
+  const JOHN_RECORDS = [...auth.dnsEntries[JOHN_NAME].TXT, 'groups admins,dev'];   // as global-setup.mjs serves them
+
+  /** Changes a name's records on both fake DoH servers; `records` is {TXT: [...]}, {_error}, or null to delete. */
+  async function setDns(name, records, ports = [env.TEST_DOH_A_PORT, env.TEST_DOH_B_PORT]) {
+    for (const port of ports) {
+      const res = await fetch(`http://127.0.0.1:${port}/admin/set`, { method: 'POST', body: JSON.stringify({ domain: name, records }) });
+      expect(res.status).toBe(200);
+    }
+  }
+
+  const refreshRequest = (creds, form, domain = DOMAIN) =>
+    tokenRequest({ grant_type: 'refresh_token', ...form }, { basic: { id: creds.clientId, secret: creds.clientSecret }, domain });
+
+  it('an app with a secret that asks for offline_access gets a refresh token, which trades for fresh tokens', async () => {
+    const { creds, config, tokens } = await fullSignIn({ extra: OFFLINE });
+    expect(tokens.scope).toBe(OFFLINE.scope);
+    expect(tokens.refresh_token).toMatch(/^A\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]+$/);
+    const before = tokens.claims();
+    const stored = new Set((await storedRecords()).map(([name]) => name));
+
+    const refreshed = await oidc.refreshTokenGrant(config, tokens.refresh_token);
+    const claims = refreshed.claims();
+    expect(claims.sub).toBe(JOHN);
+    expect(claims.aud).toBe(creds.clientId);
+    expect(claims.auth_time).toBe(before.auth_time);
+    expect(claims.iat).toBeGreaterThanOrEqual(before.iat);
+    expect(claims.nonce).toBeUndefined();
+    expect(claims.groups).toEqual(['admins@triauthdemo.org', 'dev@triauthdemo.org']);
+    expect(claims.name).toBe('John Doe');
+    expect(claims.triauth_secure).toBe(true);
+    expect(refreshed.scope).toBe(OFFLINE.scope);
+    expect(refreshed.expires_in).toBe(3600);
+    expect(refreshed.refresh_token).toMatch(/^A\./);
+    expect(refreshed.refresh_token).not.toBe(tokens.refresh_token);
+    expect(decodeJwt(refreshed.access_token).header.typ).toBe('at+jwt');
+    expect((await oidc.fetchUserInfo(config, refreshed.access_token, JOHN)).preferred_username).toBe('john');
+
+    // The bridge keeps no record of the tokens it issued: nothing was stored, and the first token
+    // still works until its own expiry.
+    expect(new Set((await storedRecords()).map(([name]) => name))).toEqual(stored);
+    expect((await oidc.refreshTokenGrant(config, tokens.refresh_token)).claims().sub).toBe(JOHN);
+  });
+
+  it('an app without a secret gets no refresh token, is told so in the granted scope, and cannot use the grant', async () => {
+    const { creds, tokens } = await fullSignIn({ method: 'none', redirectUri: 'https://cli.example.com/cb', extra: { scope: 'openid email offline_access' } });
+    expect(tokens.refresh_token).toBeUndefined();
+    expect(tokens.scope).toBe('openid email');
+    expect(decodeJwt(tokens.access_token).payload.scope).toBe('openid email');
+    const res = await tokenRequest({ grant_type: 'refresh_token', refresh_token: 'A.x.y', client_id: creds.clientId });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('unauthorized_client');
+  });
+
+  it('a refresh needs the right secret and a token sealed for this app at this domain; failed attempts change nothing', async () => {
+    const { creds, tokens } = await fullSignIn({ extra: OFFLINE });
+    const form = { grant_type: 'refresh_token', refresh_token: tokens.refresh_token };
+    const wrongSecret = creds.clientSecret.slice(0, 42) + (creds.clientSecret.endsWith('A') ? 'B' : 'A');
+    const wrong = await tokenRequest(form, { basic: { id: creds.clientId, secret: wrongSecret } });
+    expect(wrong.status).toBe(401);
+    expect(wrong.headers.get('www-authenticate')).toContain('Basic');
+    expect((await wrong.json()).error).toBe('invalid_client');
+
+    const stranger = await createCredentials(DOMAIN, APP);   // the same redirect URI, its own secret, so another client ID
+    const other = await tokenRequest(form, { basic: { id: stranger.clientId, secret: stranger.clientSecret } });
+    expect(other.status).toBe(400);
+    expect((await other.json()).error).toBe('invalid_grant');
+
+    expect((await refreshRequest(creds, { refresh_token: tokens.refresh_token }, 'other.example')).status).toBe(400);
+    expect((await (await refreshRequest(creds, { refresh_token: 'A.x.y' })).json()).error).toBe('invalid_grant');
+    expect((await (await refreshRequest(creds, {})).json()).error).toBe('invalid_request');
+    expect((await refreshRequest(creds, { refresh_token: tokens.refresh_token })).status).toBe(200);
+  });
+
+  it('a scope sent with a refresh is ignored: the claims never depended on it, and the response says what was granted', async () => {
+    const { creds, tokens } = await fullSignIn({ extra: OFFLINE });
+    const res = await refreshRequest(creds, { refresh_token: tokens.refresh_token, scope: 'openid admin' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).scope).toBe(OFFLINE.scope);
+  });
+
+  it('a token past its expiry, for another app, or for another domain is refused', async () => {
+    const { creds } = await fullSignIn({ extra: OFFLINE });
+    const keys = await loadKeys(env);
+    const now = Math.floor(Date.now() / 1000);
+    const session = { client_id: creds.clientId, scope: OFFLINE.scope, claims: { sub: JOHN, auth_time: now }, device: 'x', exp: now + 60, cap: now + 60 };
+    const outcome = async (changes, domain = DOMAIN) => {
+      const token = await mintRefreshToken(keys.signing, domain, { ...session, ...changes });
+      return (await refreshRequest(creds, { refresh_token: token })).json();
+    };
+    expect((await outcome({ exp: now - 1 })).error).toBe('invalid_grant');
+    expect((await outcome({ client_id: (await createCredentials(DOMAIN, APP)).clientId })).error).toBe('invalid_grant');
+    expect((await outcome({}, 'other.example')).error).toBe('invalid_grant');
+    // A device tag that no sign-in ever produced is revoked without a DNS lookup.
+    expect((await outcome({})).error).toBe('invalid_grant');
+  });
+
+  it('a refresh ends when the device leaves DNS, carries the groups of the day, and waits out a DNS outage', async () => {
+    const { creds, config, tokens } = await fullSignIn({ extra: OFFLINE });
+    const refresh = () => refreshRequest(creds, { refresh_token: tokens.refresh_token });
+    try {
+      // The desktop key, which john signed in with, is removed: the session is over.
+      await setDns(JOHN_NAME, { TXT: JOHN_RECORDS.filter((record) => !record.startsWith('key desktop')) });
+      const revoked = await refresh();
+      expect(revoked.status).toBe(400);
+      expect((await revoked.json()).error).toBe('invalid_grant');
+
+      // The key is back, john has left the admins group, and the records lost DNSSEC: the next ID token says so.
+      await setDns(JOHN_NAME, { TXT: [...JOHN_RECORDS.filter((record) => !record.startsWith('groups')), 'groups dev'].map((value) => ({ value, dnssec: false })) });
+      const changed = (await oidc.refreshTokenGrant(config, tokens.refresh_token)).claims();
+      expect(changed.groups).toEqual(['dev@triauthdemo.org']);
+      expect(changed.triauth_secure).toBe(false);
+
+      // One of the two resolvers fails: the bridge answers 503 and the token stays good.
+      await setDns(JOHN_NAME, { TXT: JOHN_RECORDS });
+      await setDns(JOHN_NAME, { _error: 'down' }, [env.TEST_DOH_B_PORT]);
+      const outage = await refresh();
+      expect(outage.status).toBe(503);
+      expect(outage.headers.get('retry-after')).toBe('60');
+      expect((await outage.json()).error).toBe('server_error');
+    } finally {
+      await setDns(JOHN_NAME, { TXT: JOHN_RECORDS });
+    }
+    expect((await refresh()).status).toBe(200);
+  });
+
+  it("an app limited to a group keeps a session only while the person is still a member", async () => {
+    const { creds, tokens } = await fullSignIn({ group: 'admins', extra: OFFLINE });   // john is in admins and dev
+    const refresh = () => refreshRequest(creds, { refresh_token: tokens.refresh_token });
+    expect((await refresh()).status).toBe(200);
+    try {
+      await setDns(JOHN_NAME, { TXT: [...JOHN_RECORDS.filter((record) => !record.startsWith('groups')), 'groups dev'] });
+      const left = await refresh();
+      expect(left.status).toBe(400);
+      expect((await left.json()).error).toBe('invalid_grant');
+    } finally {
+      await setDns(JOHN_NAME, { TXT: JOHN_RECORDS });
+    }
+    expect((await refresh()).status).toBe(200);   // back in the group, the same token works again: nothing was revoked
+  });
+
+  it('a refresh token outlives a key rotation and dies with its slot', async () => {
+    const { creds, tokens } = await fullSignIn({ extra: OFFLINE });
+    const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+    const keyB = JSON.stringify(await crypto.subtle.exportKey('jwk', pair.privateKey));
+    const refreshWith = (overrides) => worker.fetch(new Request(`${BASE}/${DOMAIN}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'CF-Connecting-IP': '10.97.0.1', Authorization: 'Basic ' + btoa(`${creds.clientId}:${creds.clientSecret}`) },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token }).toString(),
+    }), { ...env, ...overrides });
+
+    const flipped = await refreshWith({ SIGNING_KEY_B: keyB, SIGNING_KEY_ACTIVE: 'B' });
+    expect(flipped.status).toBe(200);
+    expect((await flipped.json()).refresh_token).toMatch(/^B\./);   // the successor is sealed under the new slot
+    const deleted = await refreshWith({ SIGNING_KEY_A: undefined, SIGNING_KEY_B: keyB, SIGNING_KEY_ACTIVE: 'B' });
+    expect(deleted.status).toBe(400);
+    expect((await deleted.json()).error).toBe('invalid_grant');
+  });
+
+  it('with refreshTokens off, discovery lists neither the grant nor the scope, no token is issued, and refreshing fails', async () => {
+    const { tokens: issued } = await fullSignIn({ extra: OFFLINE });   // while the bridge was on
+    config.refreshTokens = false;
+    try {
+      const doc = await (await req(makeJar(), 'GET', `/${DOMAIN}/.well-known/openid-configuration`)).json();
+      expect(doc.grant_types_supported).toEqual(['authorization_code']);
+      expect(doc.scopes_supported).not.toContain('offline_access');
+
+      const { creds, checks, code } = await obtainCode({ extra: OFFLINE });
+      const basic = { id: creds.clientId, secret: creds.clientSecret };
+      const redeemed = await tokenRequest({ grant_type: 'authorization_code', code, redirect_uri: APP, code_verifier: checks.pkceCodeVerifier }, { basic });
+      expect(redeemed.status).toBe(200);
+      const tokens = await redeemed.json();
+      expect(tokens.refresh_token).toBeUndefined();
+      expect(tokens.scope).toBe('openid email profile groups');
+
+      const refused = await tokenRequest({ grant_type: 'refresh_token', refresh_token: issued.refresh_token }, { basic });
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).error).toBe('unsupported_grant_type');
+    } finally {
+      config.refreshTokens = true;
+    }
   });
 });
 

@@ -16,13 +16,16 @@
 // after it stops (README, Operations, has the rotation steps). If the active slot is empty, the
 // other filled slot signs, so a wrong pointer does not stop the bridge.
 //
-// Later: refresh tokens would be sealed under a symmetric key derived from a slot's private key
-// (HKDF), so that they need no third secret. That derivation belongs here when the time comes.
+// Refresh tokens (refresh.js) are sealed under a secret derived from a slot's private key with HKDF,
+// so that the bridge needs no secret beyond its signing keys. Each slot carries its `sealingSecret`.
+// A token names the slot it was sealed under, so it outlives a rotation while the slot stays
+// published, and dies with the slot when a leaked key is deleted.
 
 import { Helpers } from 'triauth';
 
 const ALGORITHM = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
 const SLOTS = ['A', 'B'];
+const SEALING_INFO = 'triauth-oidc/v1/refresh';
 
 // Imported CryptoKeys per JWK text, for the life of the isolate: importing an RSA key costs CPU.
 const imported = new Map();
@@ -34,7 +37,7 @@ const warned = new Set();
  * @param env {object} - The Worker environment.
  * @returns {Promise<{signing: (object|null), published: Array<object>}>} `signing` is the slot that signs
  *          (null when no slot is filled); `published` lists every filled slot. A slot is
- *          `{slot, kid, privateKey, publicKey, publicJwk}`.
+ *          `{slot, kid, privateKey, publicKey, publicJwk, sealingSecret}`.
  */
 export async function loadKeys(env) {
   const slots = [];
@@ -98,6 +101,7 @@ async function importSlot(slot, text) {
       privateKey: await crypto.subtle.importKey('jwk', jwk, ALGORITHM, false, ['sign']),
       publicKey: await crypto.subtle.importKey('jwk', { kty: 'RSA', n: jwk.n, e: jwk.e }, ALGORITHM, false, ['verify']),
       publicJwk,
+      sealingSecret: await sealingSecretOf(jwk),
     };
   } catch {
     // The value is never quoted, not even through the error's message: whatever was pasted into the
@@ -105,4 +109,22 @@ async function importSlot(slot, text) {
     console.error(`[triauth-oidc] SIGNING_KEY_${slot} is not an RSA private key in JWK form; the slot is treated as empty`);
     return null;
   }
+}
+
+/**
+ * The secret that seals a slot's refresh tokens: 32 bytes from HKDF-SHA256 over the private exponent,
+ * as the 43 base64url characters that sealed.js takes as a record secret. The same key gives the same
+ * secret in every isolate, and the RSA key itself is never used for anything but signing.
+ *
+ * @param jwk {{d: string}} - The slot's private key as a JWK; only the private exponent is read.
+ * @returns {Promise<string>} 43 base64url characters.
+ */
+async function sealingSecretOf(jwk) {
+  const key = await crypto.subtle.importKey('raw', Helpers.base64UrlToUint8(jwk.d), 'HKDF', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode(SEALING_INFO) },
+    key,
+    256,
+  );
+  return Helpers.arrayBufferToBase64Url(bits);
 }

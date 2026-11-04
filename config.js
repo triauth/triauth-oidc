@@ -22,6 +22,11 @@ export default {
   // 0 = strict: every endpoint must answer, and an endpoint outage blocks sign-ins until it recovers.
   dohMaxFailures: 0,
 
+  // Issue refresh tokens to apps that keep a secret and ask for the offline_access scope, so that
+  // they can renew a sign-in without the user for as long as the device stays listed in DNS.
+  // With false, no app gets one, discovery lists neither the grant nor the scope, and refreshing fails.
+  refreshTokens: true,
+
   // Lifetimes, in seconds.
   lifetimes: {
     // The sign-in record, from the redirect to the authenticator until the user approves. triauth
@@ -35,6 +40,12 @@ export default {
     idToken: 600,
     // The access token, which works only at this bridge's /userinfo endpoint.
     accessToken: 3600,
+    // A refresh token, for an app that keeps a secret and asked for the offline_access scope. Every
+    // refresh issues a new one that lasts this long again, so a session ends after this much time
+    // without a refresh...
+    refreshIdle: 7 * 86400,
+    // ...and at the latest this long after the sign-in, however often it was refreshed.
+    refreshMax: 30 * 86400,
     // The cookie that remembers the last username in the browser. 0 disables it.
     rememberUsername: 30 * 86400,
   },

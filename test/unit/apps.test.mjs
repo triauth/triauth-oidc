@@ -3,6 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import config from '../../config.js';
 import { appSetup } from '../../src/lib/apps.js';
 import { providerFor } from '../../src/lib/provider.js';
 
@@ -34,6 +35,17 @@ test('each setup carries the credentials and the provider', () => {
   assert.match(grafana, /^client_secret = S3cr3t$/m);
   assert.match(grafana, /^auth_url = https:\/\/oidc\.test\/example\.com\/authorize$/m);
   assert.match(grafana, /^use_pkce = true$/m);
+  // The refresh lines go only where the bridge issues refresh tokens, which it does unless told otherwise.
+  assert.match(grafana, /^scopes = openid email profile groups offline_access$/m);
+  assert.match(grafana, /^use_refresh_token = true$/m);
+  config.refreshTokens = false;
+  try {
+    const without = setupFor('https://dash.example.com/login/generic_oauth');
+    assert.match(without, /^scopes = openid email profile groups$/m);
+    assert.doesNotMatch(without, /refresh/);
+  } finally {
+    config.refreshTokens = true;
+  }
 
   const gitlab = setupFor('https://code.example.com/users/auth/openid_connect/callback');
   assert.ok(gitlab.includes('issuer: "https://oidc.test/example.com",'));

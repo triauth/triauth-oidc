@@ -3,25 +3,28 @@
  * SPDX-License-Identifier: Elastic-2.0
  */
 
-// POST /{domain}/token: the app's server trades the code for tokens.
+// POST /{domain}/token: the app's server trades a code, or a refresh token, for tokens.
 //
-// Arrives:  grant_type=authorization_code, the code, the redirect_uri, the app's credentials (as HTTP
-//           Basic auth or form fields), and the PKCE code_verifier when the request had a challenge.
-// Checks:   the client ID against the redirect URI, the secret against its fingerprint in the client
-//           ID (or the PKCE verifier against the challenge), and that the code's record names this
-//           client and this redirect URI. Taking the record deletes it: a code works once.
+// Arrives:  grant_type=authorization_code with the code, the redirect_uri, the app's credentials (as
+//           HTTP Basic auth or form fields), and the PKCE code_verifier when the request had a
+//           challenge; or grant_type=refresh_token with a refresh token and the credentials.
+// Checks:   for a code: the client ID against the redirect URI, the secret against its fingerprint in
+//           the client ID (or the PKCE verifier against the challenge), and that the code's record
+//           names this client and this redirect URI. Taking the record deletes it: a code works once.
+//           For a refresh: the secret, that the token was sealed by this bridge for this domain and
+//           this app and has not expired, and that the device that signed in is still in DNS.
 // Stores:   nothing.
-// Next:     JSON with the ID token and the access token, both RS256 JWTs signed with the active key.
-//
-// Later: a refresh grant goes into the grant_type switch below. It would open a sealed refresh token
-// (keys.js derives its key), re-check the device in DNS with Triauth.check, and reissue both tokens.
+// Next:     JSON with the ID token and the access token, both RS256 JWTs signed with the active key,
+//           and a refresh token for an app with a secret that asked for offline_access (lib/refresh.js).
 
 import CONFIG from '../../config.js';
 import { Helpers } from 'triauth';
-import { parseClientId, checkClient, checkSecret, redirectUriProblem, sameRedirectUri, SECRET_LENGTH } from '../lib/credentials.js';
+import { parseClientId, checkClient, checkSecret, refusalFor, redirectUriProblem, sameRedirectUri, SECRET_LENGTH } from '../lib/credentials.js';
 import { recordsOf } from '../lib/sealed.js';
 import { loadKeys } from '../lib/keys.js';
 import { signJwt } from '../lib/jwt.js';
+import { refreshGranted, grantedScope, mintRefreshToken, openRefreshToken } from '../lib/refresh.js';
+import { checkSignIn } from '../lib/triauth.js';
 import { readForm, json, withinRateLimit } from '../lib/http.js';
 
 const CODE_VERIFIER_REGEXP = /^[A-Za-z0-9._~-]{43,128}$/;   // RFC 7636 §4.1
@@ -45,13 +48,24 @@ export async function handle({ request, env, provider }) {
   switch (form.get('grant_type')) {
     case 'authorization_code':
       return authorizationCodeGrant({ env, provider, form, auth });
+    case 'refresh_token':
+      return refreshTokenGrant({ env, provider, form, auth });
     default:
-      return oauthError('unsupported_grant_type', 'Only grant_type=authorization_code is supported.');
+      return oauthError('unsupported_grant_type', 'Only grant_type=authorization_code and grant_type=refresh_token are supported.');
   }
 }
 
 /**
  * The authorization code grant (RFC 6749 §4.1.3, OpenID Connect Core §3.1.3).
+ *
+ * @param options {{env: object, provider: object, form: URLSearchParams, auth: {client_id: string, client_secret: (string|null), basic: boolean}}} -
+ *        The Worker environment, the domain's provider (provider.js), the posted form, and the
+ *        client's credentials from clientAuthentication.
+ * @returns {Promise<Response>} The token response, with a refresh token for an app with a secret that
+ *          asked for offline_access, or an OAuth error: `invalid_request` for a missing code or
+ *          redirect_uri, `invalid_client` (401) for an unknown client ID or a wrong secret,
+ *          `invalid_grant` for a code that is unknown, used, or bound to another client, redirect URI
+ *          or PKCE challenge, and `server_error` (503) without a signing key.
  */
 async function authorizationCodeGrant({ env, provider, form, auth }) {
   const code = form.get('code');
@@ -92,26 +106,117 @@ async function authorizationCodeGrant({ env, provider, form, auth }) {
 
   const keys = await loadKeys(env);
   if (!keys.signing) {
-    return oauthError('server_error', 'No signing key is configured on this bridge.', 503, RETRY_AFTER);
+    return noSigningKey();
   }
 
+  // The session behind a refresh token, for an app with a secret that asked for offline_access.
   const now = Math.floor(Date.now() / 1000);
+  const scope = grantedScope(record.scope, client);
+  const cap = now + CONFIG.lifetimes.refreshMax;
+  const session = refreshGranted(record.scope, client)
+    ? { client_id: auth.client_id, scope, claims: record.claims, device: record.device, exp: Math.min(now + CONFIG.lifetimes.refreshIdle, cap), cap }
+    : null;
+
+  return issueTokens({ provider, keys, now, client_id: auth.client_id, scope, claims: record.claims, nonce: record.nonce, session });
+}
+
+/**
+ * The refresh token grant (RFC 6749 §6, OpenID Connect Core §12). The app proves its secret, the
+ * token must be one of ours for this domain and this app, and the device that signed in must still
+ * be in DNS and the identity must still meet the app's options; then the tokens are reissued, the
+ * ID token with the groups the identity has now and without a nonce, and the refresh token with its
+ * expiry moved on.
+ *
+ * @param options {{env: object, provider: object, form: URLSearchParams, auth: {client_id: string, client_secret: (string|null), basic: boolean}}} -
+ *        The Worker environment, the domain's provider (provider.js), the posted form, and the
+ *        client's credentials from clientAuthentication.
+ * @returns {Promise<Response>} The token response, or an OAuth error: `unsupported_grant_type` while
+ *          the bridge issues no refresh tokens, `invalid_request` without a token, `invalid_client`
+ *          (401) for an unknown client ID or a wrong secret, `unauthorized_client` for an app without
+ *          a secret, `invalid_grant` for a token that is not ours, not this app's, expired, whose
+ *          device has left DNS, or whose identity no longer meets the app's options, and
+ *          `server_error` (503) without a signing key or when DNS could not be read, with a
+ *          Retry-After so that the app tries again with the same token.
+ */
+async function refreshTokenGrant({ env, provider, form, auth }) {
+  if (CONFIG.refreshTokens !== true) {
+    return oauthError('unsupported_grant_type', 'This bridge issues no refresh tokens.');
+  }
+  const token = form.get('refresh_token');
+  if (!token) {
+    return oauthError('invalid_request', 'The request needs refresh_token.');
+  }
+
+  // The app: it must keep a secret, and prove it. No redirect URI travels with a refresh; the token
+  // names the client ID it was issued to, and the secret's fingerprint is part of that ID.
+  const client = parseClientId(auth.client_id);
+  if (!client) {
+    return invalidClient('Unknown client_id.', auth);
+  }
+  if (!client.confidential) {
+    return oauthError('unauthorized_client', 'Apps without a secret get no refresh tokens, so this grant is not available to them.');
+  }
+  if (!(await checkSecret(client, auth.client_secret))) {
+    return invalidClient('The client secret is wrong.', auth);
+  }
+
+  // The token: sealed by this bridge for this domain, issued to this app, and not expired. A scope
+  // sent along is ignored: the claims never depended on it, and the response says what was granted.
+  const keys = await loadKeys(env);
+  if (!keys.signing) {
+    return noSigningKey();
+  }
+  const session = await openRefreshToken(token, keys.published, provider.domain);
+  const now = Math.floor(Date.now() / 1000);
+  if (!session || session.client_id !== auth.client_id || now > session.exp) {
+    return oauthError('invalid_grant', 'The refresh token is unknown, expired, or was issued to another client.');
+  }
+
+  // The identity: the device that signed in must still be published, with the groups it has now.
+  const check = await checkSignIn(env, { identifier: session.claims.sub, deviceTag: session.device });
+  if (!check.ok) {
+    return check.final
+      ? oauthError('invalid_grant', 'The device that signed in is no longer published for this identity, so the session has ended.')
+      : oauthError('server_error', 'DNS could not be read right now. Try again in a moment.', 503, RETRY_AFTER);
+  }
+
+  // The app's options, as at the sign-in, against the groups of the day: a group limit ends the
+  // session of someone who left the group.
+  const claims = { ...session.claims, groups: check.groups, triauth_secure: check.secure };
+  if (refusalFor(client, claims, provider.domain)) {
+    return oauthError('invalid_grant', 'The identity no longer meets the conditions of this app, so the session has ended.');
+  }
+
+  return issueTokens({
+    provider, keys, now, client_id: auth.client_id, scope: session.scope, claims,
+    session: { ...session, exp: Math.min(now + CONFIG.lifetimes.refreshIdle, session.cap) },
+  });
+}
+
+/**
+ * The token response (RFC 6749 §5.1, OpenID Connect Core §3.1.3.3): the ID token, the access token,
+ * and the refresh token when there is a session to seal into one. The identity's claims go first,
+ * then the fixed ones, so that no claim can ever override iss, aud, or exp.
+ *
+ * @param options {{provider: object, keys: object, now: number, client_id: string, scope: string, claims: object, nonce?: string, session: (object|null)}}
+ * @returns {Promise<Response>}
+ */
+async function issueTokens({ provider, keys, now, client_id, scope, claims, nonce, session }) {
   const { kid, privateKey } = keys.signing;
-  // The identity's claims first, then the fixed ones, so that no claim can ever override iss, aud, or exp.
   const idToken = await signJwt({ typ: 'JWT', kid }, {
-    ...record.claims,
-    nonce: record.nonce,
+    ...claims,
+    nonce,
     iss: provider.issuer,
-    aud: auth.client_id,
+    aud: client_id,
     iat: now,
     exp: now + CONFIG.lifetimes.idToken,
   }, privateKey);
   // The access token is for the bridge's own /userinfo only. Its `typ` and `aud` keep it from ever
   // passing for an ID token. It carries the claims, so /userinfo needs no storage.
   const accessToken = await signJwt({ typ: 'at+jwt', kid }, {
-    ...record.claims,
-    client_id: auth.client_id,
-    scope: record.scope,
+    ...claims,
+    client_id,
+    scope,
     jti: Helpers.randomString(22),
     iss: provider.issuer,
     aud: provider.userinfo,
@@ -119,13 +224,17 @@ async function authorizationCodeGrant({ env, provider, form, auth }) {
     exp: now + CONFIG.lifetimes.accessToken,
   }, privateKey);
 
-  return json({
+  const response = {
     access_token: accessToken,
     token_type: 'Bearer',
     expires_in: CONFIG.lifetimes.accessToken,
     id_token: idToken,
-    scope: record.scope,
-  });
+    scope,
+  };
+  if (session) {
+    response.refresh_token = await mintRefreshToken(keys.signing, provider.domain, session);
+  }
+  return json(response);
 }
 
 /**
@@ -190,6 +299,15 @@ export function oauthError(error, description, status = 400, headers = {}) {
  */
 function invalidClient(description, auth) {
   return oauthError('invalid_client', description, 401, auth.basic ? BASIC_CHALLENGE : {});
+}
+
+/**
+ * The 503 for a bridge without a signing key, with a Retry-After, so that apps try again later.
+ *
+ * @returns {Response}
+ */
+function noSigningKey() {
+  return oauthError('server_error', 'No signing key is configured on this bridge.', 503, RETRY_AFTER);
 }
 
 async function pkceHash(verifier) {

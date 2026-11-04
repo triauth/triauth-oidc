@@ -20,7 +20,7 @@
 //   POST /{domain}/login                            endpoints/login.js       triauth stage 1 -> the authenticator
 //   POST /{domain}/apps/{host}/callback             endpoints/callback.js    triauth stage 3 -> back to the app with a code
 //   GET  /{domain}/apps/{host}/                     endpoints/callback.js    the app's address, for the authenticator's tile
-//   POST /{domain}/token                            endpoints/token.js       code -> ID token and access token
+//   POST /{domain}/token                            endpoints/token.js       code or refresh token -> ID token, access token, refresh token
 //   GET  /{domain}/userinfo                         endpoints/userinfo.js    claims for an access token
 //
 // Discovery also answers under the name .well-known/oauth-authorization-server, and at the RFC 8414

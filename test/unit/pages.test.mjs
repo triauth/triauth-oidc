@@ -95,6 +95,7 @@ test('domain, credentials, tile and home pages render and escape', async () => {
   assert.ok(c.includes('<h2>Using Grafana?</h2>'));
   assert.ok(c.includes('client_secret = S'));
   assert.ok(c.includes('[auth.generic_oauth]'));
+  assert.ok(c.includes('use_refresh_token = true'), 'the card uses refresh tokens while the bridge issues them');
   const p = await credentialsPage({ provider, credentials: { clientId: 'r', clientSecret: null, host: 'app.example.com', redirectUri: 'https://app.example.com/cb' } }).text();
   assert.ok(p.includes('must use PKCE'));
   assert.equal(p.includes('<h2>Using '), false, 'an app not recognised gets no setup card');

@@ -85,7 +85,7 @@ export async function handle({ request, env, url, provider, params }) {
     nonce: authorizationRequest.nonce,
     scope: authorizationRequest.scope,
     claims: finished.claims,
-    device: finished.deviceTag,   // not used today; a refresh grant would re-check this device in DNS
+    device: finished.deviceTag,   // a refresh checks this device in DNS again (token.js)
   }, CONFIG.lifetimes.code);
 
   const cookies = [...clearFlow];

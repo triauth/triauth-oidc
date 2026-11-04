@@ -22,6 +22,7 @@
 // `#{`). The shell command holds only the domain, the client ID, the secret and the bridge's own URL,
 // none of which can contain a quote.
 
+import CONFIG from '../../config.js';
 import { html } from './html.js';
 
 const APPS = [
@@ -30,8 +31,10 @@ const APPS = [
     path: '/login/generic_oauth',
     how: html`Paste this into <code>grafana.ini</code>, or enter the same values under Administration › Authentication › Generic OAuth.`,
     docs: 'https://grafana.com/docs/grafana/latest/setup-grafana/configure-access/configure-authentication/generic-oauth/',
-    // No refresh token: the bridge issues none, and Grafana would sign people out when the access
-    // token expires. use_refresh_token stays at its default, false.
+    // With offline_access and use_refresh_token, Grafana renews its session through the bridge and
+    // signs the person out when that fails (the device left DNS, or the session reached its limit),
+    // instead of keeping a session of its own for 30 days. Without refresh tokens, Grafana would sign
+    // people out when the access token expires, so both lines go only where the bridge issues them.
     setup: (provider, { clientId, clientSecret }) => [
       '[auth.generic_oauth]',
       'enabled = true',
@@ -41,8 +44,9 @@ const APPS = [
       `auth_url = ${provider.authorize}`,
       `token_url = ${provider.token}`,
       `api_url = ${provider.userinfo}`,
-      'scopes = openid email profile groups',
+      `scopes = openid email profile groups${CONFIG.refreshTokens ? ' offline_access' : ''}`,
       'use_pkce = true',
+      ...(CONFIG.refreshTokens ? ['use_refresh_token = true'] : []),
       'groups_attribute_path = groups',
     ],
   },
