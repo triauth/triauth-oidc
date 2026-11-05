@@ -112,18 +112,21 @@ const ruby = (value) => JSON.stringify(value);
 const shell = (value) => `'${value}'`;
 
 /**
- * The app behind a redirect URI, with its setup filled in, or null for an app not listed.
+ * The app behind the redirect URIs, with its setup filled in, or null for an app not listed. The
+ * first redirect URI whose path names an app decides, and goes into the setup.
  *
  * @param provider {object} - The domain's provider, with its URLs.
- * @param credentials {{clientId: string, clientSecret: (string|null), redirectUri: string}} - The
- *        credentials just created; the redirect URI was checked to be a canonical URL.
+ * @param credentials {{clientId: string, clientSecret: (string|null), redirectUris: Array<string>}} - The
+ *        credentials just created; each redirect URI was checked to be a canonical URL.
  * @returns {{name: string, how: Html, docs: string, setup: string}|null}
  */
 export function appSetup(provider, credentials) {
-  const path = new URL(credentials.redirectUri).pathname;
-  const app = APPS.find((entry) => path.endsWith(entry.path));
-  if (!app) {
-    return null;
+  for (const redirectUri of credentials.redirectUris) {
+    const path = new URL(redirectUri).pathname;
+    const app = APPS.find((entry) => path.endsWith(entry.path));
+    if (app) {
+      return { name: app.name, how: app.how, docs: app.docs, setup: app.setup(provider, { ...credentials, redirectUri }).join('\n') };
+    }
   }
-  return { name: app.name, how: app.how, docs: app.docs, setup: app.setup(provider, credentials).join('\n') };
+  return null;
 }

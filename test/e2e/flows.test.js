@@ -2,7 +2,7 @@
 // openid-client as the app. The tests are grouped by the invariant they prove (PLAN.md, section 1):
 //
 //   I1  a token from issuer https://oidc.test/D names only identities at exactly D
-//   I2  a code goes only to the redirect URI that its client ID was made for
+//   I2  a code goes only to a redirect URI its client ID was made for
 //   I3  each triauth challenge and each code is used at most once
 //   I4  stored records expire within minutes and cannot be read without the cookie or the code
 //   I5  the bridge sends the browser to an app only after the user saw the app's address and acted
@@ -45,8 +45,8 @@ async function browserSignIn(jar, authUrl, { username = 'john', identifier = JOH
 }
 
 /** Credentials for the app, discovery by openid-client, and the authorization URL. */
-async function prepare({ method = 'basic', redirectUri = APP, domain = DOMAIN, group = null, extra = {} } = {}) {
-  const creds = await createCredentials(domain, redirectUri, { secret: method !== 'none', group });
+async function prepare({ method = 'basic', redirectUri = APP, redirectUris = [redirectUri], domain = DOMAIN, group = null, extra = {} } = {}) {
+  const creds = await createCredentials(domain, redirectUris, { secret: method !== 'none', group });
   const config = await discover(`${BASE}/${domain}`, creds.clientId, { secret: creds.clientSecret ?? undefined, method });
   const { url, checks } = await startAuthorization(config, redirectUri, extra);
   return { creds, config, url, checks };
@@ -243,6 +243,62 @@ describe('the pages', () => {
     expect((await req(makeJar(), 'POST', `/${DOMAIN}/credentials`, { headers: { Origin: 'https://evil.test' }, form: { redirect_uri: APP } })).status).toBe(403);
   });
 
+  it('creates credentials for up to three redirect URIs from the form, and sends a bad one back with its field marked', async () => {
+    const form = (fields) => req(makeJar(), 'POST', `/${DOMAIN}/credentials`, { headers: { Origin: BASE }, form: fields });
+    const LOGIN = 'https://photos.example.com/auth/login';
+    const SETTINGS = 'https://photos.example.com/user-settings';
+    const MOBILE = 'https://photos.example.com/api/oauth/mobile-redirect';
+
+    // Three URIs, trimmed: one client ID with three r's, which /authorize accepts with each of them.
+    const res = await form({ redirect_uri: ` ${LOGIN} `, redirect_uri_2: SETTINGS, redirect_uri_3: MOBILE });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const clientId = html.match(/<code class="value">([a-z2-7]{26}(?:\.[a-z2-7]{26}){2}_[a-z2-7]{26})<\/code>/)?.[1];
+    expect(clientId).toBeTruthy();
+    expect(html).toContain('<h1>OpenID Connect settings for photos.<wbr>example.<wbr>com</h1>');
+    expect(html).toContain(`<dt>Redirect URIs</dt><dd><code class="value">${LOGIN}</code><code class="value">${SETTINGS}</code><code class="value">${MOBILE}</code></dd>`);
+    for (const uri of [LOGIN, SETTINGS, MOBILE]) {
+      const page = await req(makeJar(), 'GET', `/${DOMAIN}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(uri)}&state=s`);
+      expect(page.status, uri).toBe(200);
+      expect(await page.text()).toContain(`title="${uri}"`);
+    }
+
+    // Two spellings of one URL count once; a set of one is the single-URI form.
+    const twice = await (await form({ redirect_uri: 'https://pve.example.com:8006', redirect_uri_2: 'https://pve.example.com:8006/', redirect_uri_3: 'https://pve.example.com:8006/other' })).text();
+    expect(twice).toMatch(/<code class="value">[a-z2-7]{26}\.[a-z2-7]{26}_[a-z2-7]{26}<\/code>/);
+    expect(twice).toContain('<dt>Redirect URIs</dt><dd><code class="value">https://pve.example.com:8006</code><code class="value">https://pve.example.com:8006/other</code></dd>');
+    const same = await (await form({ redirect_uri: 'https://pve.example.com:8006', redirect_uri_2: 'https://pve.example.com:8006/' })).text();
+    expect(same).toMatch(/<code class="value">[a-z2-7]{26}_[a-z2-7]{26}<\/code>/);
+    expect(same).toContain('<dt>Redirect URI</dt><dd><code class="value">https://pve.example.com:8006</code></dd>');
+
+    // The page names every host.
+    const vault = await (await form({ redirect_uri: 'https://vault.example.com/ui/vault/auth/oidc/oidc/callback', redirect_uri_2: 'http://localhost:8250/oidc/callback' })).text();
+    expect(vault).toContain('<h1>OpenID Connect settings for vault.<wbr>example.<wbr>com and localhost:8250</h1>');
+
+    // A bad URI in any field goes back with the form, the problem, and that field alone marked.
+    const marked = async (fields, problem, field) => {
+      const bad = await form(fields);
+      expect(bad.status, problem).toBe(400);
+      const page = await bad.text();
+      expect(page).toContain(problem);
+      expect([...page.matchAll(/name="(redirect_uri(?:_\d)?)"[^>]*aria-invalid="true"/g)].map((m) => m[1])).toEqual([field]);
+      return page;
+    };
+    // An app without a secret needs a domain name in every URI, not only the first; with a secret the address passes.
+    const ip = await marked({ redirect_uri: LOGIN, redirect_uri_2: 'https://192.168.0.254:8006', public: '1' }, 'needs a domain name in its redirect URI', 'redirect_uri_2');
+    expect(ip).toContain(`name="redirect_uri" value="${LOGIN}"`);
+    expect(ip).toContain('<details class="add" open>');
+    expect(ip).toContain('name="public" value="1" checked>');
+    expect((await form({ redirect_uri: LOGIN, redirect_uri_2: 'https://192.168.0.254:8006' })).status).toBe(200);
+    await marked({ redirect_uri: LOGIN, redirect_uri_2: SETTINGS, redirect_uri_3: `${BASE}/${DOMAIN}/authorize` }, 'own host', 'redirect_uri_3');
+    // An empty first field with a second filled: the first is missing, and the second is kept, in its open fold.
+    const missing = await marked({ redirect_uri: '  ', redirect_uri_2: SETTINGS }, 'The redirect URI is missing.', 'redirect_uri');
+    expect(missing).toContain(`name="redirect_uri_2" value="${SETTINGS}"`);
+    expect(missing).toContain('<details class="add" open>');
+    // A fourth field is not read.
+    expect(await (await form({ redirect_uri: LOGIN, redirect_uri_2: SETTINGS, redirect_uri_3: MOBILE, redirect_uri_4: 'https://photos.example.com/x' })).text()).not.toContain('photos.example.com/x');
+  });
+
   it('limits sign-ins to a group from the form, and refuses a bad name with the form as it was sent', async () => {
     const form = (fields) => req(makeJar(), 'POST', `/${DOMAIN}/credentials`, { headers: { Origin: BASE }, form: { redirect_uri: APP, ...fields } });
     const res = await form({ limit_group: '1', group: ' Admins@TriauthDemo.org ' });
@@ -339,7 +395,31 @@ describe('I1: a token names only identities at its domain', () => {
 
 // -------------------------------------------------------------------------------- I2 --
 
-describe('I2: a code goes only to the redirect URI of its client ID', () => {
+describe('I2: a code goes only to a redirect URI of its client ID', () => {
+  it('a client ID made for several redirect URIs signs in through any of them, and a code stays bound to the one used', async () => {
+    // Immich: its web login and its account-linking page, two URIs under one client ID.
+    const LOGIN = 'https://photos.example.com/auth/login';
+    const SETTINGS = 'https://photos.example.com/user-settings';
+    const both = [LOGIN, SETTINGS];
+    for (const redirectUri of both) {
+      const { tokens, location } = await fullSignIn({ redirectUri, redirectUris: both });
+      expect(location.origin + location.pathname).toBe(redirectUri);
+      expect(tokens.claims().sub).toBe(JOHN);
+    }
+
+    // A code minted for one of them is refused at /token with the other, though both are the client's.
+    const { creds, checks, code } = await obtainCode({ redirectUri: LOGIN, redirectUris: both });
+    const swapped = await tokenRequest({ grant_type: 'authorization_code', code, redirect_uri: SETTINGS, code_verifier: checks.pkceCodeVerifier }, { basic: { id: creds.clientId, secret: creds.clientSecret } });
+    expect(swapped.status).toBe(400);
+    expect((await swapped.json()).error).toBe('invalid_grant');
+
+    // A third URI on the same host is not the client's.
+    const third = encodeURIComponent('https://photos.example.com/api/oauth/mobile-redirect');
+    const res = await req(makeJar(), 'GET', `/${DOMAIN}/authorize?response_type=code&client_id=${creds.clientId}&redirect_uri=${third}&state=s`);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('was not made for');
+  });
+
   it('an app at an IPv4 address whose redirect URI has no path signs in, as Proxmox VE does', async () => {
     // Proxmox VE sends its origin without the slash; openid-client sends the redirect_uri to /token
     // as the URL parser writes it, with the slash.

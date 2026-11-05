@@ -8,7 +8,7 @@ import { appSetup } from '../../src/lib/apps.js';
 import { providerFor } from '../../src/lib/provider.js';
 
 const provider = providerFor('https://oidc.test', 'example.com');
-const credentials = (redirectUri, clientSecret = 'S3cr3t') => ({ clientId: 'app.example.com~a~b', clientSecret, host: new URL(redirectUri).host, redirectUri });
+const credentials = (redirectUri, clientSecret = 'S3cr3t') => ({ clientId: 'app.example.com~a~b', clientSecret, hosts: [new URL(redirectUri).host], redirectUris: [redirectUri] });
 const setupFor = (redirectUri, clientSecret) => appSetup(provider, credentials(redirectUri, clientSecret)).setup;
 
 test('the path names the app, on any host and under any folder; the host name does not', () => {
@@ -62,6 +62,14 @@ test('each setup carries the credentials and the provider', () => {
 
   const outline = setupFor('https://wiki.example.com/auth/oidc.callback');
   assert.equal(outline, 'OIDC_CLIENT_ID=app.example.com~a~b\nOIDC_CLIENT_SECRET=S3cr3t\nOIDC_ISSUER_URL=https://oidc.test/example.com\nOIDC_DISPLAY_NAME=example.com');
+});
+
+test('with several redirect URIs, the first whose path names an app decides, and goes into the setup', () => {
+  const several = (...redirectUris) => appSetup(provider, { clientId: 'c', clientSecret: 'S', hosts: ['code.example.com'], redirectUris });
+  const gitlab = several('https://code.example.com/other', 'https://code.example.com/users/auth/openid_connect/callback');
+  assert.equal(gitlab.name, 'GitLab');
+  assert.ok(gitlab.setup.includes('redirect_uri: "https://code.example.com/users/auth/openid_connect/callback"'));
+  assert.equal(several('https://photos.example.com/auth/login', 'https://photos.example.com/user-settings'), null);
 });
 
 test('an app without a secret gets an empty one, and Ruby strings are quoted', () => {

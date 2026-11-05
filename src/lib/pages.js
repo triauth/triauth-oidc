@@ -69,7 +69,7 @@ export function domainPage({ provider, status = null, form = {}, httpStatus = 20
  */
 export function credentialsPage({ provider, credentials }) {
   return page({
-    title: `Credentials for ${credentials.host} · ${provider.domain}`,
+    title: `Credentials for ${credentials.hosts.join(', ')} · ${provider.domain}`,
     wide: true,
     body: credentialsView({ provider, credentials, app: appSetup(provider, credentials) }),
   });

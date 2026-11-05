@@ -18,6 +18,10 @@
 //   r          the first 26 characters of base32(SHA-256("triauth-oidc/v1/client" 0 domain 0 redirect URI 0 rest))
 //   client ID  r, then "_" and rest when rest is not empty
 //
+// An app with several redirect URIs (at most MAX_REDIRECT_URIS) has one r per URI, each computed as
+// above with its own URI, sorted and joined by ".": r1.r2.r3, then "_" and rest as before. The
+// redirect URI of a request must recompute to one of them.
+//
 // base32 is RFC 4648, lowercase, unpadded: 26 characters carry 130 bits. The zeros are zero bytes
 // between the fields. Client IDs are case-sensitive, and use only lowercase letters, digits, "_", "-"
 // and ".", which pass unchanged through URLs, Basic auth, config files, and shells.
@@ -33,23 +37,25 @@
 //
 // What follows: anyone can compute an ID, so nothing needs a key or a registry; pointing an existing
 // ID at another redirect URI, or changing its options, needs a 130-bit second preimage; a secret that
-// fits an existing `s` needs a 130-bit preimage; each client ID has exactly one redirect URI; a new
-// secret, a new redirect URI, or new options mean a new client ID.
+// fits an existing `s` needs a 130-bit preimage; each client ID has a fixed set of redirect URIs, and
+// an r added to or taken from the set makes another client ID, whose tokens the app rejects by their
+// audience; a new secret, a new redirect URI, or new options mean a new client ID.
 
 import { Helpers, LIMITS, validate } from 'triauth';
 
 export const SECRET_LENGTH = 43;          // base64url of 32 bytes
+export const MAX_REDIRECT_URIS = 3;       // r's in one client ID; enough for every app known to need more than one
 const FINGERPRINT_LENGTH = 26;            // base32 characters, 130 bits
 const MAX_CLIENT_ID_LENGTH = 191;         // what some apps store at most (django-allauth); PLAN.md, section 5
 const SECRET_LABEL = 'triauth-oidc/v1/secret';
 const CLIENT_LABEL = 'triauth-oidc/v1/client';
 
-// r, then s when the app has a secret, then the options. The part after r is s when it has no "-";
-// every option has one.
-const CLIENT_ID_REGEXP = /^([a-z2-7]{26})(?:_([a-z2-7]{26}))?((?:_[a-z]-[a-z0-9.-]+)*)$/;
+// One r per redirect URI, then s when the app has a secret, then the options. The part after the r's
+// is s when it has no "-"; every option has one.
+const CLIENT_ID_REGEXP = new RegExp(`^([a-z2-7]{26}(?:\\.[a-z2-7]{26}){0,${MAX_REDIRECT_URIS - 1}})(?:_([a-z2-7]{26}))?((?:_[a-z]-[a-z0-9.-]+)*)$`);
 
 // The options the bridge knows, by key: the property of a parsed client that holds the value, and the
-// check of the value. The longest client ID they allow has 76 characters.
+// check of the value. The longest client ID they allow has 130 characters, with three redirect URIs.
 const OPTIONS = {
   g: { name: 'group', valid: isGroupName },   // only the members of this group at the domain may sign in
 };
@@ -193,25 +199,31 @@ export function newSecret() {
  * Creates credentials for an app. Nothing is stored.
  *
  * @param domain {string} - The provider's domain, e.g. 'example.com'.
- * @param redirectUri {string} - The app's redirect URI, already checked with redirectUriProblem.
+ * @param redirectUris {string|Array<string>} - The app's redirect URI, or up to MAX_REDIRECT_URIS of them,
+ *        each already checked with redirectUriProblem.
  * @param [options] {{secret?: boolean, group?: (string|null)}} - `secret: false` for an app that cannot
  *        keep a secret; `group` to let only that group's members sign in, already checked with isGroupName.
- * @returns {Promise<{clientId: string, clientSecret: (string|null), host: string, redirectUri: string, domain: string, group: (string|null)}>}
+ * @returns {Promise<{clientId: string, clientSecret: (string|null), hosts: Array<string>, redirectUris: Array<string>, domain: string, group: (string|null)}>}
+ *          `redirectUris` as given, without duplicates; `hosts` theirs, each once.
  */
-export async function createCredentials(domain, redirectUri, { secret = true, group = null } = {}) {
-  return credentialsFor(domain, redirectUri, secret ? newSecret() : null, { group });
+export async function createCredentials(domain, redirectUris, { secret = true, group = null } = {}) {
+  return credentialsFor(domain, redirectUris, secret ? newSecret() : null, { group });
 }
 
 /**
  * The recipe itself: the credentials for a given secret (or none) and options.
  *
  * @param domain {string} - The provider's domain.
- * @param redirectUri {string} - The app's redirect URI, already checked with redirectUriProblem.
+ * @param redirectUris {string|Array<string>} - The app's redirect URIs, as for createCredentials.
  * @param clientSecret {string|null} - The 43-character secret, or null for an app without one.
  * @param [options] {{group?: (string|null)}} - The app's options; a value that is not valid throws.
- * @returns {Promise<{clientId: string, clientSecret: (string|null), host: string, redirectUri: string, domain: string, group: (string|null)}>}
+ * @returns {Promise<{clientId: string, clientSecret: (string|null), hosts: Array<string>, redirectUris: Array<string>, domain: string, group: (string|null)}>}
  */
-export async function credentialsFor(domain, redirectUri, clientSecret, options = {}) {
+export async function credentialsFor(domain, redirectUris, clientSecret, options = {}) {
+  const uris = distinctRedirectUris(redirectUris);
+  if (uris.length === 0 || uris.length > MAX_REDIRECT_URIS) {
+    throw new TypeError(`An app has 1 to ${MAX_REDIRECT_URIS} redirect URIs, not ${uris.length}`);
+  }
   const items = Object.entries(OPTIONS)
     .filter(([, option]) => options[option.name] !== undefined && options[option.name] !== null)
     .map(([key, option]) => {
@@ -223,25 +235,33 @@ export async function credentialsFor(domain, redirectUri, clientSecret, options 
     .sort();
   const s = clientSecret === null ? '' : await secretFingerprint(clientSecret);
   const rest = [s, ...items].filter(Boolean).join('_');
-  const r = await clientFingerprint(domain, redirectUri, rest);
+  const r = (await Promise.all(uris.map((uri) => clientFingerprint(domain, uri, rest)))).sort();
 
   return {
-    clientId: rest === '' ? r : `${r}_${rest}`,
+    clientId: rest === '' ? r.join('.') : `${r.join('.')}_${rest}`,
     clientSecret,
-    host: appHost(redirectUri),
-    redirectUri,
+    hosts: [...new Set(uris.map(appHost))],
+    redirectUris: uris,
     domain,
     group: options.group ?? null,
   };
 }
 
 /**
+ * The redirect URIs as an array, each once: two spellings of one URL (sameRedirectUri) count as one,
+ * and the first spelling stays.
+ */
+function distinctRedirectUris(redirectUris) {
+  return [].concat(redirectUris).filter((uri, i, all) => all.findIndex((other) => sameRedirectUri(other, uri)) === i);
+}
+
+/**
  * Takes a client ID apart. It does not check the fingerprints; checkClient does.
  *
  * @param clientId {*} - The client ID as an app sent it.
- * @returns {{r: string, s: string, rest: string, confidential: boolean, group: (string|null)}|null} Null
- *          when it is not a client ID of this bridge. `s` is '' for an app without a secret; `rest` is
- *          everything after r, which r covers.
+ * @returns {{r: Array<string>, s: string, rest: string, confidential: boolean, group: (string|null)}|null} Null
+ *          when it is not a client ID of this bridge. `r` has one entry per redirect URI; `s` is '' for
+ *          an app without a secret; `rest` is everything after the r's, which each r covers.
  */
 export function parseClientId(clientId) {
   if (typeof clientId !== 'string' || clientId.length > MAX_CLIENT_ID_LENGTH) {
@@ -251,16 +271,21 @@ export function parseClientId(clientId) {
   if (!match) {
     return null;
   }
-  const [, r, s = '', items] = match;
+  const [, rs, s = '', items] = match;
+  const r = rs.split('.');
+  if (r.some((value, i) => i > 0 && r[i - 1] >= value)) {
+    return null;   // one spelling: the r's in order, each once
+  }
   const options = optionsOf(items === '' ? [] : items.slice(1).split('_'));
   if (!options) {
     return null;
   }
-  return { r, s, rest: clientId.slice(r.length + 1), confidential: s !== '', ...options };
+  return { r, s, rest: clientId.slice(rs.length + 1), confidential: s !== '', ...options };
 }
 
 /**
- * Checks that a client ID was made for this domain and this redirect URI, by recomputing it.
+ * Checks that a client ID was made for this domain and this redirect URI, by recomputing it: the
+ * fingerprint of the request's redirect URI must be one of the client ID's r's.
  *
  * @param domain {string} - The provider's domain.
  * @param clientId {*} - The client ID from the request.
@@ -275,7 +300,7 @@ export async function checkClient(domain, clientId, redirectUri) {
     return null;
   }
   const r = await clientFingerprint(domain, redirectUri, client.rest);
-  return equalStrings(r, client.r) ? { ...client, host } : null;
+  return client.r.some((candidate) => equalStrings(r, candidate)) ? { ...client, host } : null;
 }
 
 /**

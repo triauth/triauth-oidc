@@ -440,6 +440,9 @@ form.card > .card-head + .card-body {
 .value:hover {
   background: var(--brand-soft);
 }
+.value + .value {
+  margin-top: .375rem;
+}
 
 /* A rarely needed section, folded into one quiet line: no card, muted text, a chevron that turns */
 details.more {
@@ -498,6 +501,53 @@ details.more .rows > div:last-child {
   }
 }
 
+/* A field added on request, as a contacts app adds a phone: a plus in a circle and a line, which give
+   way to the field. The summary goes once open, so a typed value cannot be folded away; the field
+   stands where the line was, and Tab moves on to it. */
+details.add {
+  margin-top: 1rem;
+}
+details.add > summary {
+  display: flex;
+  align-items: baseline;
+  gap: .625rem;
+  font-size: .9375rem;
+  font-weight: 500;
+  color: var(--brand);
+  list-style: none;
+  cursor: pointer;
+}
+details.add > summary::-webkit-details-marker {
+  display: none;
+}
+details.add > summary::before {
+  content: "+";
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-align: center;
+  background: var(--brand-soft);
+  border-radius: 50%;
+}
+details.add > summary .hint {
+  margin: .125rem 0 0;
+  font-weight: 400;
+}
+details.add > summary:hover {
+  color: var(--brand-dark);
+}
+details.add > summary:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+details.add[open] > summary {
+  display: none;
+}
+
 /* The provider's settings and the credentials */
 table {
   width: 100%;
@@ -546,6 +596,10 @@ input:focus {
   outline: none;
   border-color: var(--brand);
   box-shadow: 0 0 0 3px var(--brand-ring);
+}
+/* The field a problem is about, when it could be one of several */
+input[aria-invalid="true"] {
+  border-color: var(--error);
 }
 /* A field with the domain after it, in one box. When the domain leaves the field less than 8rem, it
    moves to a line of its own under the field, and a domain wider than the box wraps. The box draws

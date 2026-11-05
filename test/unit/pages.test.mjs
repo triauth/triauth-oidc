@@ -81,7 +81,7 @@ test('the error page links back only when asked, and never redirects', async () 
 });
 
 test('domain, credentials, tile and home pages render and escape', async () => {
-  const d = await domainPage({ provider, status: { configured: true, authenticator: 'auth.example.com', secure: true }, form: { redirectUri: HOSTILE, problem: HOSTILE } }).text();
+  const d = await domainPage({ provider, status: { configured: true, authenticator: 'auth.example.com', secure: true }, form: { redirectUris: [HOSTILE], problem: HOSTILE } }).text();
   assert.equal(d.includes('class="badge'), false, 'a domain that is set up shows no badge, only problems do');
   assert.ok(d.includes('<body class="wide">'));
   assert.ok(d.includes('By connecting an app, you agree to our <a href="https://www.triauth.org/legal/terms"'), 'the notice links the Terms');
@@ -91,12 +91,12 @@ test('domain, credentials, tile and home pages render and escape', async () => {
   assert.ok(d.includes('copy its redirect URI. <span class="hint">Not sure where? <a href="https://www.triauth.org/everywhere/?q=OIDC" target="_blank" rel="noopener">Setup guides for popular apps <span aria-hidden="true">↗</span></a></span></li>'), 'step 1 links the showcase of guides');
   assert.equal((d.match(/<details class="more"/g) || []).length, 1, 'the provider settings are the only fold');
   assert.equal(d.includes('<img'), false);
-  const c = await credentialsPage({ provider, credentials: { clientId: 'r_s', clientSecret: 'S', host: 'app.example.com', redirectUri: 'https://app.example.com/login/generic_oauth' } }).text();
+  const c = await credentialsPage({ provider, credentials: { clientId: 'r_s', clientSecret: 'S', hosts: ['app.example.com'], redirectUris: ['https://app.example.com/login/generic_oauth'] } }).text();
   assert.ok(c.includes('<h2>Using Grafana?</h2>'));
   assert.ok(c.includes('client_secret = S'));
   assert.ok(c.includes('[auth.generic_oauth]'));
   assert.ok(c.includes('use_refresh_token = true'), 'the card uses refresh tokens while the bridge issues them');
-  const p = await credentialsPage({ provider, credentials: { clientId: 'r', clientSecret: null, host: 'app.example.com', redirectUri: 'https://app.example.com/cb' } }).text();
+  const p = await credentialsPage({ provider, credentials: { clientId: 'r', clientSecret: null, hosts: ['app.example.com'], redirectUris: ['https://app.example.com/cb'] } }).text();
   assert.ok(p.includes('must use PKCE'));
   assert.equal(p.includes('<h2>Using '), false, 'an app not recognised gets no setup card');
   const tile = tilePage({ provider, host: 'app.example.com', url: 'https://app.example.com/' });

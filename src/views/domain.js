@@ -10,8 +10,9 @@
 //   provider   the domain's provider, with its URLs
 //   status     {configured: true, authenticator, secure} | {configured: false} | {configured: null}
 //              when DNS could not be read, or null when the page shows no status
-//   form       {redirectUri, publicClient, limitGroup, group, problem}: the form as it was sent back,
-//              with the problem found in it, or {} for a fresh form
+//   form       {redirectUris, invalid, publicClient, limitGroup, group, problem}: the form as it was
+//              sent back, with the problem found in it and the index of the redirect URI the problem
+//              is about (null when it is not about one), or {} for a fresh form
 //
 // The card walks someone new to OpenID Connect through the order that is easy to miss: copy the
 // redirect URI out of the app, paste it here, then copy what comes back into the app. The steps sit
@@ -20,7 +21,9 @@
 // showcase on www.triauth.org, filtered to the apps that sign in through the bridge, where each app's
 // guide shows where its redirect URI is; the bridge keeps no list of guides of its own. The group's
 // field shows only while its box is checked, by the stylesheet alone, because the pages run no
-// scripts. The box's hint links to triauth's page on groups, which many admins meet here first. The
+// scripts; the second and third redirect URI fields appear the same way, behind an "Add another
+// redirect URI" line each (redirectUriFields, below). The box's hint links to triauth's page on
+// groups, which many admins meet here first. The
 // hint sits outside the label, tied to the box by aria-describedby, so the link is not read as part
 // of the box's name. Both links open in a new tab, so the form keeps what was typed.
 //
@@ -48,8 +51,7 @@ ${banner(provider.domain, status)}
 </div>
 <div class="card-body">
 ${form.problem ? html`<p class="err">${form.problem}</p>` : ''}
-<label for="redirect_uri">Redirect URI<span class="aka">(sometimes called <em>Callback URL</em> or <em>Redirect URL</em>)</span></label>
-<input id="redirect_uri" type="url" name="redirect_uri" value="${form.redirectUri ?? ''}" placeholder="e.g., https://grafana.example.com/login/generic_oauth" required autocomplete="off" spellcheck="false">
+${redirectUriFields(form)}
 <div class="check"><input id="public" type="checkbox" name="public" value="1" ${form.publicClient ? 'checked' : ''}> <label for="public">This app can't keep a secret <span class="hint">For command-line and mobile apps.</span></label></div>
 <div class="check"><input id="limit_group" type="checkbox" name="limit_group" value="1" aria-describedby="limit_group_hint" ${form.limitGroup ? 'checked' : ''}> <div>
 <label for="limit_group">Limit sign-ins to a specific group</label>
@@ -67,6 +69,29 @@ ${form.problem ? html`<p class="err">${form.problem}</p>` : ''}
 </form>
 ${providerSettings(provider, { collapsed: true })}
 `;
+
+// The redirect URI, and a second and a third behind an "Add another redirect URI" line each, the way
+// a contacts app adds a phone: the line is the summary of a <details> that reveals the next field in
+// its place. The summary goes once open (stylesheet), so a typed value cannot be folded away, and the
+// third field's line sits inside the second's, so the lines come one at a time. A field comes back
+// open when the form returns with a value or the problem in it, and the problem's field is marked.
+// The field names are the endpoint's (endpoints/domain.js).
+function redirectUriFields({ redirectUris = [], invalid = null }) {
+  const field = (i, name) => html`<input id="${name}" type="url" name="${name}" value="${redirectUris[i] ?? ''}"${i === 0 ? html` placeholder="e.g., https://grafana.example.com/login/generic_oauth" required` : ''} autocomplete="off" spellcheck="false"${invalid === i ? html` aria-invalid="true"` : ''}>`;
+  const open = (i) => (redirectUris[i] || invalid === i ? 'open' : '');
+  return html`<label for="redirect_uri">Redirect URI<span class="aka">(sometimes called <em>Callback URL</em> or <em>Redirect URL</em>)</span></label>
+${field(0, 'redirect_uri')}
+<details class="add" ${open(1) || open(2)}>
+<summary><span>Add another redirect URI<span class="hint">For apps whose settings list more than one.</span></span></summary>
+<label for="redirect_uri_2">Second redirect URI</label>
+${field(1, 'redirect_uri_2')}
+<details class="add" ${open(2)}>
+<summary><span>Add another redirect URI</span></summary>
+<label for="redirect_uri_3">Third redirect URI</label>
+${field(2, 'redirect_uri_3')}
+</details>
+</details>`;
+}
 
 function banner(domain, status) {
   if (status?.configured === false) {

@@ -14,7 +14,8 @@ test('a client ID is r, then s, then the options, joined by _', async () => {
   assert.match(c.clientId, /^[a-z2-7]{26}_[a-z2-7]{26}$/);
   assert.equal(c.clientSecret.length, SECRET_LENGTH);
   assert.match(c.clientSecret, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(c.host, 'grafana.example.com');
+  assert.deepEqual(c.hosts, ['grafana.example.com']);
+  assert.deepEqual(c.redirectUris, [URI]);
   assert.equal(c.group, null);
 
   const limited = await createCredentials('example.com', URI, { group: 'admins' });
@@ -39,18 +40,54 @@ test('the recipe is deterministic for a given domain, redirect URI, secret and o
   // The same values, recomputed here independently of credentials.js: r covers everything after it.
   const client = parseClientId(c.clientId);
   assert.equal(client.s, await fingerprintOf('triauth-oidc/v1/secret', [ZERO_SECRET]));
-  assert.equal(client.r, await fingerprintOf('triauth-oidc/v1/client', ['example.com', URI, client.s]));
-  assert.equal(parseClientId(limited.clientId).r, await fingerprintOf('triauth-oidc/v1/client', ['example.com', URI, `${client.s}_g-admins`]));
+  assert.deepEqual(client.r, [await fingerprintOf('triauth-oidc/v1/client', ['example.com', URI, client.s])]);
+  assert.deepEqual(parseClientId(limited.clientId).r, [await fingerprintOf('triauth-oidc/v1/client', ['example.com', URI, `${client.s}_g-admins`])]);
 });
 
 test('a client ID without a secret is r alone, or r and its options', async () => {
   const c = await createCredentials('example.com', 'http://localhost:3000/cb', { secret: false });
   assert.equal(c.clientSecret, null);
   assert.match(c.clientId, /^[a-z2-7]{26}$/);
-  assert.equal(c.host, 'localhost:3000');
-  assert.deepEqual(parseClientId(c.clientId), { r: c.clientId, s: '', rest: '', confidential: false, group: null });
+  assert.deepEqual(c.hosts, ['localhost:3000']);
+  assert.deepEqual(parseClientId(c.clientId), { r: [c.clientId], s: '', rest: '', confidential: false, group: null });
   const limited = parseClientId('gzvl2be2a6usxd7xf7622srh2q_g-admins');
-  assert.deepEqual(limited, { r: 'gzvl2be2a6usxd7xf7622srh2q', s: '', rest: 'g-admins', confidential: false, group: 'admins' });
+  assert.deepEqual(limited, { r: ['gzvl2be2a6usxd7xf7622srh2q'], s: '', rest: 'g-admins', confidential: false, group: 'admins' });
+});
+
+test('an app with several redirect URIs has one r per URI, sorted and joined by ".", and signs in through any of them', async () => {
+  // Immich: its web login, its account-linking page, and its own https stand-in for the mobile app's callback.
+  const LOGIN = 'https://photos.example.com/auth/login';
+  const SETTINGS = 'https://photos.example.com/user-settings';
+  const MOBILE = 'https://photos.example.com/api/oauth/mobile-redirect';
+  const c = await credentialsFor('example.com', [LOGIN, SETTINGS, MOBILE], ZERO_SECRET, { group: 'family' });
+  assert.equal(c.clientId, 'f4j3hbifvnjppzttfvtjzqbzus.oa3v6ryyzcfylhslrlpjqdx5db.orxvgvbiu7qq35pat57vxptmmc_aszpe4odoc3swcioqdufcsdkue_g-family');
+  assert.deepEqual(c.redirectUris, [LOGIN, SETTINGS, MOBILE]);
+  assert.deepEqual(c.hosts, ['photos.example.com']);
+  assert.equal((await credentialsFor('example.com', [MOBILE, LOGIN, SETTINGS], ZERO_SECRET, { group: 'family' })).clientId, c.clientId, 'in any order');
+  const client = parseClientId(c.clientId);
+  assert.equal(client.rest, 'aszpe4odoc3swcioqdufcsdkue_g-family');
+  for (const uri of [LOGIN, SETTINGS, MOBILE]) {
+    // Each r is the r of that URI alone, with the same secret and options, so each covers the rest.
+    const alone = await credentialsFor('example.com', uri, ZERO_SECRET, { group: 'family' });
+    assert.ok(client.r.includes(parseClientId(alone.clientId).r[0]), uri);
+    assert.equal(parseClientId(alone.clientId).r[0], await fingerprintOf('triauth-oidc/v1/client', ['example.com', uri, client.rest]));
+    assert.equal((await checkClient('example.com', c.clientId, uri))?.host, 'photos.example.com', uri);
+  }
+  assert.deepEqual(client.r, [...client.r].sort());
+  assert.equal(await checkClient('example.com', c.clientId, 'https://photos.example.com/auth/login/'), null);
+  assert.equal(await checkClient('example.com', c.clientId, 'https://photos.example.com/'), null);
+  assert.equal(await checkClient('other.com', c.clientId, LOGIN), null);
+  assert.equal(await checkClient('example.com', c.clientId.replace('_g-family', ''), LOGIN), null, 'every r covers the options');
+
+  // The hosts, each once; two spellings of one URL count once; one to three URIs.
+  const vault = await credentialsFor('example.com', ['https://vault.example.com/ui/vault/auth/oidc/oidc/callback', 'http://localhost:8250/oidc/callback'], ZERO_SECRET);
+  assert.equal(vault.clientId, '2yaztzoglp62kd6ujs7cq3iuit.k3fhws647jfexwhcg4ja56w323_aszpe4odoc3swcioqdufcsdkue');
+  assert.deepEqual(vault.hosts, ['vault.example.com', 'localhost:8250']);
+  const once = await credentialsFor('example.com', ['https://pve.example.com:8006', 'https://pve.example.com:8006/'], ZERO_SECRET);
+  assert.equal(once.clientId, (await credentialsFor('example.com', 'https://pve.example.com:8006', ZERO_SECRET)).clientId);
+  assert.deepEqual(once.redirectUris, ['https://pve.example.com:8006']);
+  await assert.rejects(credentialsFor('example.com', [], ZERO_SECRET), TypeError);
+  await assert.rejects(credentialsFor('example.com', [LOGIN, SETTINGS, MOBILE, 'https://photos.example.com/x'], ZERO_SECRET), TypeError);
 });
 
 test('checkClient accepts the exact domain, redirect URI and options only', async () => {
@@ -86,9 +123,11 @@ test('checkSecret needs the exact 43-character secret of a confidential client',
 });
 
 test('parseClientId refuses hostile and malformed input, and any second spelling of the options', () => {
-  const r = 'a'.repeat(26), s = 'b'.repeat(26);
+  const r = 'a'.repeat(26), s = 'b'.repeat(26), c = 'c'.repeat(26);
   assert.ok(parseClientId(`${r}_${s}_g-admins`));
+  assert.ok(parseClientId(`${r}.${s}.${c}_${s}_g-admins`));
   for (const bad of [undefined, null, 42, '', r.slice(1), r.toUpperCase(), `${r}_`, `_${r}`, `${r}__${s}`, `${r}_${s}_`, `${r}~${s}`,
+    `${s}.${r}_${s}`, `${r}.${r}_${s}`, `${r}.${s}.${s}_${s}`, `${r}.${s}.${c}.${'d'.repeat(26)}_${s}`, `${r}._${s}`, `.${r}_${s}`, `${r}.${s.slice(1)}_${s}`, `${r}.${s}.`,
     `grafana.example.com~${s}~${r}`, `${r}_${s}_${s}`, `${r}_${s}_g-`, `${r}_${s}_g`, `${r}_${s}_x-1`, `${r}_${s}_g-admins_g-dev`,
     `${r}_${s}_g-Admins`, `${r}_${s}_g--admins`, `${r}_${s}_g-admins-`, `${r}_${s}_g-a.b`, `${r}_${s}_g-${'a'.repeat(21)}`,
     `${r}_g-admins_${s}`, `${r}_${s}_g-admins\n`, `${r}_${s}_gadmins`, 'x'.repeat(600)]) {
@@ -146,9 +185,9 @@ test('an app without a secret needs a domain name or localhost in its redirect U
 test('a redirect URI without a path is the same URL as with "/": one client ID, either spelling', async () => {
   const bare = await credentialsFor('example.com', 'https://pve.example.com:8006', ZERO_SECRET);
   assert.equal(bare.clientId, (await credentialsFor('example.com', 'https://pve.example.com:8006/', ZERO_SECRET)).clientId);
-  assert.equal(bare.redirectUri, 'https://pve.example.com:8006');
+  assert.deepEqual(bare.redirectUris, ['https://pve.example.com:8006']);
   const client = parseClientId(bare.clientId);
-  assert.equal(client.r, await fingerprintOf('triauth-oidc/v1/client', ['example.com', 'https://pve.example.com:8006/', client.s]));
+  assert.deepEqual(client.r, [await fingerprintOf('triauth-oidc/v1/client', ['example.com', 'https://pve.example.com:8006/', client.s])]);
   assert.ok(await checkClient('example.com', bare.clientId, 'https://pve.example.com:8006/'));
   assert.ok(await checkClient('example.com', bare.clientId, 'https://pve.example.com:8006'));
   assert.ok(sameRedirectUri('https://pve.example.com:8006', 'https://pve.example.com:8006/'));
