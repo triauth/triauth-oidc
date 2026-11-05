@@ -159,12 +159,14 @@ test('group names follow triauth, and the recipe refuses any other', async () =>
   assert.match(groupNameProblem('Admins', 'example.com'), /lowercase letters/);
 });
 
-test('redirect URIs must be canonical https (or http://localhost), without fragment, off the bridge host', () => {
+test('redirect URIs must be canonical https (or http on a loopback host), without fragment, off the bridge host', () => {
   for (const good of [URI, 'http://localhost:3000/callback', 'https://app.example.com/cb?x=1', 'https://192.168.0.254:8006/',
-    'https://192.168.0.254:8006', 'https://pve.example.com:8006', 'https://app.example.com?x=1', 'http://localhost:8000']) {
+    'https://192.168.0.254:8006', 'https://pve.example.com:8006', 'https://app.example.com?x=1', 'http://localhost:8000',
+    'http://127.0.0.1:6274/cb', 'http://127.0.0.1/cb']) {
     assert.equal(redirectUriProblem(good, BRIDGE), null, good);
   }
   for (const bad of ['', undefined, 'http://grafana.example.com/x', 'https://Grafana.example.com/x', 'http://192.168.0.254:8006/',
+    'http://127.0.0.2/x', 'http://[::1]:3000/x', 'http://localhost.example.com/x',
     'https://1.2.3/x', 'https://01.2.3.4/x', 'https://3232235774/x', 'https://grafana.example.com#frag', 'https://',
     'https://[::1]/x', 'https://user@grafana.example.com/x', 'https://grafana.example.com/x#frag', 'https://grafana.example.com/a/../x',
     'https://xn--80ak6aa92e.com/x', 'javascript:alert(1)', `https://${BRIDGE}/example.com/authorize`, 'https://grafana.example.com:443/x',
@@ -173,8 +175,8 @@ test('redirect URIs must be canonical https (or http://localhost), without fragm
   }
 });
 
-test('an app without a secret needs a domain name or localhost in its redirect URI', () => {
-  for (const good of [URI, 'https://pve.lan:8006/', 'https://pve.example.com:8006', 'http://localhost:8000', 'https://localhost/cb']) {
+test('an app without a secret needs a domain name or a loopback host in its redirect URI', () => {
+  for (const good of [URI, 'https://pve.lan:8006/', 'https://pve.example.com:8006', 'http://localhost:8000', 'https://localhost/cb', 'http://127.0.0.1:6274/cb']) {
     assert.equal(publicClientProblem(good), null, good);
   }
   for (const bad of ['https://192.168.0.254:8006/', 'https://192.168.0.254:8006', 'https://203.0.113.5/cb', 'https://proxmox:8006/']) {
@@ -235,11 +237,12 @@ function base32(bytes) {
   return out;
 }
 
-test('appRootUrl is the root of the host, http for localhost, and null for a host no redirect URI could have', () => {
+test('appRootUrl is the root of the host, http for a loopback host, and null for a host no redirect URI could have', () => {
   assert.equal(appRootUrl('app.example.com', 'oidc.test'), 'https://app.example.com/');
   assert.equal(appRootUrl('app.example.com:8443', 'oidc.test'), 'https://app.example.com:8443/');
   assert.equal(appRootUrl('192.168.0.14:8006', 'oidc.test'), 'https://192.168.0.14:8006/');
   assert.equal(appRootUrl('localhost', 'oidc.test'), 'http://localhost/');
+  assert.equal(appRootUrl('127.0.0.1:6274', 'oidc.test'), 'http://127.0.0.1:6274/');
   assert.equal(appRootUrl('localhost:3000', 'oidc.test'), 'http://localhost:3000/');
   for (const host of ['oidc.test', 'oidc.test:8443', 'x.oidc.test', 'a..b', '-a.b', 'app.example.com:443', 'localhost:80', 'xn--80ak6aa92e.com']) {
     assert.equal(appRootUrl(host, 'oidc.test'), null, host);

@@ -50,6 +50,11 @@ const MAX_CLIENT_ID_LENGTH = 191;         // what some apps store at most (djang
 const SECRET_LABEL = 'triauth-oidc/v1/secret';
 const CLIENT_LABEL = 'triauth-oidc/v1/client';
 
+// The loopback hosts, where a program on the user's own computer receives the code over plain http
+// (RFC 8252 §7.3): the IP literal the RFC names, and localhost, which most tools send anyway. The
+// RFC's other literal, [::1], stays out: triauth's URL grammar has no IPv6.
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1'];
+
 // One r per redirect URI, then s when the app has a secret, then the options. The part after the r's
 // is s when it has no "-"; every option has one.
 const CLIENT_ID_REGEXP = new RegExp(`^([a-z2-7]{26}(?:\\.[a-z2-7]{26}){0,${MAX_REDIRECT_URIS - 1}})(?:_([a-z2-7]{26}))?((?:_[a-z]-[a-z0-9.-]+)*)$`);
@@ -62,9 +67,10 @@ const OPTIONS = {
 
 /**
  * Checks a redirect URI. Canonical https URLs only, by triauth's own URL rules (a lowercase host name
- * or an IPv4 address, no Punycode), or http://localhost for development, without a fragment, and
- * never on the bridge's own host (its sign-in page would then read "sign in to oidc.triauth.org"). A
- * URI without a path, such as https://pve.example.com:8006, is checked with the path "/".
+ * or an IPv4 address, no Punycode), or http on a loopback host (localhost or 127.0.0.1) for a program
+ * on the user's own computer, without a fragment, and never on the bridge's own host (its sign-in
+ * page would then read "sign in to oidc.triauth.org"). A URI without a path, such as
+ * https://pve.example.com:8006, is checked with the path "/".
  *
  * @param redirectUri {*} - The candidate.
  * @param bridgeHost {string} - The bridge's own host, e.g. 'oidc.triauth.org'.
@@ -76,8 +82,8 @@ export function redirectUriProblem(redirectUri, bridgeHost) {
   }
 
   const uri = withRootPath(redirectUri);
-  if (!Helpers.isCanonicalUrl(uri) || (!uri.startsWith('https://') && new URL(uri).hostname !== 'localhost')) {
-    return 'The redirect URI must be a canonical https:// URL (or http://localhost for development): lowercase host name or IPv4 address, no user info, no "." or ".." segments.';
+  if (!Helpers.isCanonicalUrl(uri) || (!uri.startsWith('https://') && !LOOPBACK_HOSTS.includes(new URL(uri).hostname))) {
+    return 'The redirect URI must be a canonical https:// URL (or http://localhost or http://127.0.0.1 for a program on the user\'s own computer): lowercase host name or IPv4 address, no user info, no "." or ".." segments.';
   }
   if (redirectUri.includes('#')) {
     return 'The redirect URI must not have a fragment (#).';
@@ -91,17 +97,18 @@ export function redirectUriProblem(redirectUri, bridgeHost) {
 }
 
 /**
- * Checks that an app without a secret has a domain name or localhost in its redirect URI. Anyone can
- * start a sign-in with such an app's client ID and a PKCE verifier of their own, so only the redirect
- * URI keeps its codes from others, and an IP address or a name without a dot can be someone else's
- * machine on another network.
+ * Checks that an app without a secret has a domain name or a loopback host in its redirect URI.
+ * Anyone can start a sign-in with such an app's client ID and a PKCE verifier of their own, so only
+ * the redirect URI keeps its codes from others, and an IP address or a name without a dot can be
+ * someone else's machine on another network. A loopback host is the user's own machine on every
+ * network, so a code sent there never leaves it.
  *
  * @param redirectUri {string} - A redirect URI, already checked with redirectUriProblem.
  * @returns {string|null} A reason when such an app must keep a secret, null when it may go without.
  */
 export function publicClientProblem(redirectUri) {
   const hostname = new URL(redirectUri).hostname;
-  if (hostname === 'localhost' || Helpers.isDomainName(hostname)) {
+  if (LOOPBACK_HOSTS.includes(hostname) || Helpers.isDomainName(hostname)) {
     return null;
   }
   return 'An app that can\'t keep a secret needs a domain name in its redirect URI. On another network, the same address can be someone else\'s machine.';
@@ -134,16 +141,16 @@ export function appHost(redirectUri) {
 
 /**
  * The root URL of an app's host, for the page behind the app's address on the bridge: https, or http
- * for localhost, as a redirect URI would have it. Null when no redirect URI could have this host
+ * for a loopback host, as a redirect URI would have it. Null when no redirect URI could have this host
  * (redirectUriProblem's rules, which keep out the bridge's own host), so the page links only where an
- * app could have sent a sign-in from. The scheme is a guess for localhost, where https is rare.
+ * app could have sent a sign-in from. The scheme is a guess for a loopback host, where https is rare.
  *
  * @param host {string} - The app's host, as in the address's path: a host name or IPv4 address, with an optional port.
  * @param bridgeHost {string} - The bridge's own host, e.g. 'oidc.triauth.org'.
  * @returns {string|null}
  */
 export function appRootUrl(host, bridgeHost) {
-  const url = `${host.split(':')[0] === 'localhost' ? 'http' : 'https'}://${host}/`;
+  const url = `${LOOPBACK_HOSTS.includes(host.split(':')[0]) ? 'http' : 'https'}://${host}/`;
   return redirectUriProblem(url, bridgeHost) === null ? url : null;
 }
 

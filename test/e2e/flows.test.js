@@ -662,6 +662,11 @@ describe('client authentication and PKCE', () => {
     const { creds, tokens } = await fullSignIn({ method: 'none', redirectUri: 'https://cli.example.com/cb' });
     expect(creds.clientSecret).toBeNull();
     expect(tokens.claims().aud).toBe(creds.clientId);
+
+    // A program on the user's own computer, at the loopback address RFC 8252 names, over plain http.
+    const local = await fullSignIn({ method: 'none', redirectUri: 'http://127.0.0.1:6274/cb' });
+    expect(local.location.origin).toBe('http://127.0.0.1:6274');
+    expect(local.tokens.claims().sub).toBe(JOHN);
   });
 
   it('an app without a secret must send a PKCE challenge', async () => {
