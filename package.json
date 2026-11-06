@@ -1,6 +1,6 @@
 {
   "name": "triauth-oidc",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "private": true,
   "license": "Elastic-2.0",
   "description": "An OpenID Connect provider for triauth identities, as one Cloudflare Worker: sign in to any app that supports OpenID Connect with your triauth identity.",
